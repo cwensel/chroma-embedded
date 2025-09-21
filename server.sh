@@ -9,7 +9,7 @@ set -e
 IMAGE_NAME="chromadb-enhanced"
 IMAGE_TAG="latest"
 CONTAINER_NAME="chromadb-enhanced"
-HOST_PORT="8000"
+HOST_PORT="9000"
 CONTAINER_PORT="8000"
 DATA_DIR="./chroma_data"
 MODELS_CACHE="./models_cache"
@@ -21,7 +21,7 @@ show_help() {
     echo ""
     echo "Options:"
     echo "  -m, --model MODEL        Embedding model (stella|modernbert|bge-large) [default: stella]"
-    echo "  -p, --port PORT          Host port [default: 8000]"
+    echo "  -p, --port PORT          Host port [default: 9000]"
     echo "  -d, --data-dir PATH      Data directory for persistence [default: ./chroma_data]"
     echo "  -c, --cache-dir PATH     Models cache directory [default: ./models_cache]"
     echo "  --container-name NAME    Docker container name [default: chromadb-enhanced]"
@@ -143,7 +143,7 @@ docker run -d \
     --name "$CONTAINER_NAME" \
     --restart unless-stopped \
     -p "${HOST_PORT}:${CONTAINER_PORT}" \
-    -v "${DATA_DIR}:/chroma/data" \
+    -v "${DATA_DIR}:/data" \
     -v "${MODELS_CACHE}:/models" \
     -e CHROMA_EMBEDDING_MODEL="$EMBEDDING_MODEL" \
     -e TRANSFORMERS_CACHE="/models" \

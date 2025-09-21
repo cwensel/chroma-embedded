@@ -110,7 +110,7 @@ Add to model comparison table:
 ./upload.sh -e mpnet -i /path/to/test/pdfs -l 1 -c TestModel --delete-collection
 
 # Verify collection
-curl "http://localhost:8000/api/v2/collections/TestModel"
+curl "http://localhost:9000/api/v2/collections/TestModel"
 ```
 
 ## Common Model Types

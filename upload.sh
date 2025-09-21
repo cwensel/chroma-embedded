@@ -9,7 +9,7 @@
 # Options:
 #   -c, --collection NAME      ChromaDB collection name (default: ResearchLibrary)
 #   -h, --host HOST            ChromaDB host for remote client (default: localhost)
-#   -p, --port PORT            ChromaDB port for remote client (default: 8000)
+#   -p, --port PORT            ChromaDB port for remote client (default: 9000)
 #   -l, --limit NUMBER         Maximum number of files to upload (optional)
 #   -i, --input-path PATH      Path to recursively search for PDF files (required)"
 #   -d, --data-path PATH       Path for ChromaDB persistence data storage (forces persistence mode)
@@ -25,7 +25,7 @@
 #
 # Client Selection:
 #   - If --data-path is specified: uses PersistentClient
-#   - Otherwise: uses HttpClient with --host and --port (default: localhost:8000)
+#   - Otherwise: uses HttpClient with --host and --port (default: localhost:9000)
 #
 # Environment variables:
 #   PDF_INPUT_PATH: Path to directory containing PDF files (alternative to -i option)
@@ -36,7 +36,7 @@ set -e
 # Default values
 COLLECTION_NAME="ResearchLibrary"
 CHROMA_HOST="localhost"
-CHROMA_PORT="8000"
+CHROMA_PORT="9000"
 UPLOAD_LIMIT=""
 INPUT_PATH="${PDF_INPUT_PATH:-}"  # Use environment variable or require CLI option
 CHROMA_DATA_DIR=""
@@ -53,7 +53,7 @@ show_help() {
     echo "Options:"
     echo "  -c, --collection NAME      ChromaDB collection name (default: ResearchLibrary)"
     echo "  -h, --host HOST            ChromaDB host for remote client (default: localhost)"
-    echo "  -p, --port PORT            ChromaDB port for remote client (default: 8000)"
+    echo "  -p, --port PORT            ChromaDB port for remote client (default: 9000)"
     echo "  -l, --limit NUMBER         Maximum number of files to upload (optional)"
     echo "  -i, --input-path PATH      Path to recursively search for PDF files (required)"
     echo "  -d, --data-path PATH       Path for ChromaDB persistence data storage (forces persistence mode)"
@@ -69,7 +69,7 @@ show_help() {
     echo ""
     echo "Client Selection:"
     echo "  - If --data-path is specified: uses PersistentClient"
-    echo "  - Otherwise: uses HttpClient with --host and --port (default: localhost:8000)"
+    echo "  - Otherwise: uses HttpClient with --host and --port (default: localhost:9000)"
     echo ""
     echo "Environment variables:"
     echo "  PDF_INPUT_PATH: Path to directory containing PDF files (alternative to -i option)"
@@ -85,7 +85,7 @@ show_help() {
     echo "  $0 -i /path/to/pdfs -c MyCollection -l 10"
     echo "  $0 -i /path/to/pdfs -c MyCollection -e stella"
     echo "  $0 -i /path/to/pdfs -d /path/to/chroma/data -c MyCollection"
-    echo "  $0 -i /path/to/pdfs -h remote.host.com -p 9000 -c MyCollection"
+    echo "  $0 -i /path/to/pdfs -h remote.host.com -p 9001 -c MyCollection"
     echo "  $0 -i /path/to/pdfs --delete-collection -c MyCollection -e stella"
     echo "  PDF_INPUT_PATH=/path/to/pdfs $0 -e modernbert --chunk-size 2000"
 }
@@ -506,7 +506,7 @@ try:
     collection_name = sys.argv[2]
     client_type = sys.argv[3]
     chroma_host = sys.argv[4] if len(sys.argv) > 4 else 'localhost'
-    chroma_port = int(sys.argv[5]) if len(sys.argv) > 5 else 8000
+    chroma_port = int(sys.argv[5]) if len(sys.argv) > 5 else 9000
     data_dir = sys.argv[6] if len(sys.argv) > 6 else './chroma_data'
     chunk_size = int(sys.argv[7]) if len(sys.argv) > 7 else 3000
     chunk_overlap = int(sys.argv[8]) if len(sys.argv) > 8 else 600

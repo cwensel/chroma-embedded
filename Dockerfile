@@ -3,17 +3,32 @@ FROM python:3.11-slim AS builder
 
 WORKDIR /build
 
-# Install embedding dependencies
+# Install build dependencies for xformers
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install embedding dependencies and ChromaDB
+# Use specific xformers version that has pre-built wheels
 RUN pip install --no-cache-dir \
+    chromadb>=0.5.0 \
     sentence-transformers==5.1.0 \
     torch>=2.0.0 \
-    transformers>=4.41.0
+    transformers>=4.41.0 \
+    "xformers>=0.0.20"
 
 # Copy embedding functions file
 COPY embedding_functions.py /build/embedding_functions.py
 
 # Stage 2: Runtime - ChromaDB base with our enhancements
 FROM chromadb/chroma:latest
+
+# Install missing system dependencies for PyTorch/transformers
+RUN apt-get update && apt-get install -y \
+    libffi8 \
+    libffi-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy Python executable, libraries and dependencies from builder
 COPY --from=builder /usr/local/bin/python* /usr/local/bin/
@@ -106,18 +121,13 @@ esac\n\
 \n\
 echo "Checking model: $CHROMA_EMBEDDING_MODEL ($MODEL_NAME)"\n\
 \n\
-# Check if model is already cached by trying to load it quickly\n\
-MODEL_CACHED=$(python3 -c "\
-import os, sys\n\
-sys.path.insert(0, \"/chroma\")\n\
-try:\n\
-    from sentence_transformers import SentenceTransformer\n\
-    # Try to load model from cache (no download)\n\
-    model = SentenceTransformer(\"$MODEL_NAME\", cache_folder=\"/models\", local_files_only=True, $MODEL_ARGS)\n\
-    print(\"cached\")\n\
-except:\n\
-    print(\"missing\")\n\
-" 2>/dev/null)\n\
+# Check if model is already cached by examining directory structure\n\
+MODEL_DIR=\"/models/models--$(echo $MODEL_NAME | tr '/' '--')\"\n\
+if [ -d \"$MODEL_DIR\" ] && [ \"$(ls -A $MODEL_DIR 2>/dev/null)\" ]; then\n\
+    MODEL_CACHED=\"cached\"\n\
+else\n\
+    MODEL_CACHED=\"missing\"\n\
+fi\n\
 \n\
 if [ "$MODEL_CACHED" = "cached" ]; then\n\
     echo "✓ Model $CHROMA_EMBEDDING_MODEL already cached"\n\

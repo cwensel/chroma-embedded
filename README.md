@@ -45,7 +45,7 @@ High-performance ChromaDB server with built-in support for multiple state-of-the
 ./server.sh -m stella
 
 # Start with ModernBERT on custom port
-./server.sh -m modernbert -p 8001
+./server.sh -m modernbert -p 9001
 
 # Start with BGE-Large for production
 ./server.sh -m bge-large
@@ -83,7 +83,7 @@ High-performance ChromaDB server with built-in support for multiple state-of-the
 ./upload.sh -i /path/to/pdfs -e stella --chunk-size 2000 --chunk-overlap 400
 
 # Remote server
-./upload.sh -i /path/to/pdfs -e stella -h remote-server.com -p 8000
+./upload.sh -i /path/to/pdfs -e stella -h remote-server.com -p 9000
 
 # Custom collection name
 ./upload.sh -i /path/to/pdfs -e modernbert -c MyResearch --delete-collection
@@ -110,18 +110,14 @@ PDF_INPUT_PATH=/path/to/pdfs ./upload.sh -e stella
 
 ## 🔄 Migration from Old Setup
 
-### If Currently Using PersistentClient:
-1. Build enhanced image: `./build.sh`
-2. Start enhanced server: `./server.sh -m stella`
-3. Recreate collections: `./upload.sh -i /path/to/pdfs -e stella --delete-collection`
-4. Update MCP to use HttpClient pointing to localhost:8000
+If currently using PersistentClient:
+```bash
+./build.sh
+./server.sh -m stella
+./upload.sh -i /path/to/pdfs -e stella --delete-collection
+```
 
-### Benefits of Migration:
-- ✅ **Better embeddings**: Stella-400m vs all-MiniLM-L6-v2
-- ✅ **Centralized logic**: One place for embedding models
-- ✅ **Model flexibility**: Switch models without client changes
-- ✅ **Better performance**: Server-side GPU utilization
-- ✅ **Simplified clients**: No local ML dependencies needed
+Then update your `claude.json` MCP configuration to use `localhost:9000`.
 
 ## 🧪 Testing
 
@@ -135,27 +131,10 @@ PDF_INPUT_PATH=/path/to/pdfs ./upload.sh -e stella
 
 ## 🎛️ Environment Variables
 
-### Server Configuration
 ```bash
-export CHROMA_EMBEDDING_MODEL=stella     # Default embedding model
-export TRANSFORMERS_CACHE=/models        # Model cache directory
-export HF_HOME=/models                   # HuggingFace cache
+export PDF_INPUT_PATH=/path/to/pdfs      # Required for upload.sh
+export CHROMA_EMBEDDING_MODEL=stella     # Server default model
 ```
-
-### Client Configuration
-```bash
-export PDF_INPUT_PATH=/path/to/pdfs      # Default PDF input directory
-export CHROMA_DATA_PATH=/path/to/data    # For PersistentClient mode
-```
-
-## 📊 Performance Comparison
-
-| Setup | Embedding Quality | Dimensions | Speed | Complexity |
-|-------|-------------------|------------|--------|------------|
-| **Old (default)** | Good | 384 | Fast | Low |
-| **Enhanced (Stella)** | Excellent | 1024 | Medium | Low |
-| **Enhanced (ModernBERT)** | Excellent | 1024 | Medium | Low |
-| **Enhanced (BGE-Large)** | Very Good | 1024 | Fast | Low |
 
 ## 🔍 Troubleshooting
 
@@ -174,7 +153,7 @@ docker ps
 ### Upload Failures
 ```bash
 # Test server connection
-curl http://localhost:8000/api/v2/heartbeat
+curl http://localhost:9000/api/v2/heartbeat
 
 # Check dependencies
 python3 -c "import chromadb, fitz; print('✅ Dependencies OK')"
@@ -195,6 +174,46 @@ python3 -c "import chromadb, fitz; print('✅ Dependencies OK')"
 3. **Monitor resources**: Models require significant memory
 4. **Backup collections**: Before major changes
 5. **Test thoroughly**: Use small uploads first
+
+## 🔌 Claude Code MCP Integration
+
+### Setup Steps
+
+1. **Start ChromaDB Server**:
+   ```bash
+   ./server.sh -m stella
+   ```
+
+2. **Configure MCP in claude.json**:
+   ```json
+   {
+     "mcpServers": {
+       "chroma-docker": {
+         "command": "docker",
+         "args": [
+           "run", "-i", "--rm", "--network", "host",
+           "mcp/chroma", "chroma-mcp",
+           "--client-type", "http",
+           "--host", "localhost",
+           "--port", "9000",
+           "--ssl", "false"
+         ]
+       }
+     }
+   }
+   ```
+
+3. **Test Connection**:
+   ```bash
+   curl http://localhost:9000/api/v2/heartbeat
+   ```
+
+4. **Restart Claude Code** to load the configuration
+
+### Benefits
+- ✅ **Superior Embeddings**: Stella-400m vs default models
+- ✅ **Centralized Management**: One server for all embedding needs
+- ✅ **Research-Optimized**: Designed for PDF workflows
 
 ## 🔮 Future Enhancements
 
