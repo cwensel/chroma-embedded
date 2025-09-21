@@ -1,0 +1,62 @@
+# Docker volumes and data
+chroma_data/
+models_cache/
+*.db
+
+# PDF files (users specify their own paths)
+
+# Temporary files
+/tmp/
+*.tmp
+*.log
+upload_*_log_*.txt
+existing_files_*.txt
+new_files_*.txt
+upload_results_*.txt
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model cache directories
+transformers_cache/
+huggingface_cache/
+sentence_transformers_cache/
+
+# Docker
+*.dockerfile.bak
+docker-compose.override.yml

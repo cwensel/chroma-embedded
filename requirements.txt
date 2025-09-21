@@ -1,0 +1,10 @@
+# ChromaDB Enhanced Embedding - Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# Core dependencies
+chromadb>=1.1.0
+pymupdf>=1.26.0
+
+# Optional: For advanced usage
+sentence-transformers>=5.1.0
+torch>=2.0.0
