@@ -1,61 +1,158 @@
-FROM python:3.11-slim
+# Stage 1: Builder - Install dependencies only
+FROM python:3.11-slim AS builder
 
-# Set working directory
-WORKDIR /chroma
+WORKDIR /build
 
-# Install ChromaDB and Python dependencies
+# Install embedding dependencies
 RUN pip install --no-cache-dir \
-    chromadb>=0.5.0 \
     sentence-transformers==5.1.0 \
     torch>=2.0.0 \
     transformers>=4.41.0
 
-# Create model cache directory
-RUN mkdir -p /models
+# Copy embedding functions file
+COPY embedding_functions.py /build/embedding_functions.py
+
+# Stage 2: Runtime - ChromaDB base with our enhancements
+FROM chromadb/chroma:latest
+
+# Copy Python executable, libraries and dependencies from builder
+COPY --from=builder /usr/local/bin/python* /usr/local/bin/
+COPY --from=builder /usr/local/lib/python3.11 /usr/local/lib/python3.11
+COPY --from=builder /usr/local/lib/libpython3.11.so* /usr/local/lib/
+COPY --from=builder /build/embedding_functions.py /chroma/embedding_functions.py
+
+# Set environment variables for external model cache
 ENV TRANSFORMERS_CACHE=/models
 ENV HF_HOME=/models
-
-# Pre-download embedding models to avoid runtime delays
-RUN python3 -c "\
-import os; \
-os.environ['TRANSFORMERS_CACHE'] = '/models'; \
-os.environ['HF_HOME'] = '/models'; \
-from sentence_transformers import SentenceTransformer; \
-print('Downloading embedding models...'); \
-stella = SentenceTransformer('dunzhang/stella_en_400M_v5', trust_remote_code=True); \
-print(f'✓ Stella-400m loaded: {stella.get_sentence_embedding_dimension()} dimensions'); \
-modernbert = SentenceTransformer('answerdotai/ModernBERT-large', trust_remote_code=True); \
-print(f'✓ ModernBERT-large loaded: {modernbert.get_sentence_embedding_dimension()} dimensions'); \
-bge = SentenceTransformer('BAAI/bge-large-en-v1.5'); \
-print(f'✓ BGE-Large loaded: {bge.get_sentence_embedding_dimension()} dimensions'); \
-print('All embedding models downloaded successfully!')"
-
-# Create custom embedding functions module
-RUN python3 -c "\
-import os; \
-os.environ['TRANSFORMERS_CACHE'] = '/models'; \
-os.environ['HF_HOME'] = '/models'; \
-embedding_code = '''from chromadb import Documents, EmbeddingFunction, Embeddings\nfrom sentence_transformers import SentenceTransformer\nimport os\n\nclass StellaEmbeddingFunction(EmbeddingFunction[Documents]):\n    def __init__(self):\n        self.model = SentenceTransformer(\"dunzhang/stella_en_400M_v5\", trust_remote_code=True)\n\n    def __call__(self, input: Documents) -> Embeddings:\n        return self.model.encode(input).tolist()\n\nclass ModernBERTEmbeddingFunction(EmbeddingFunction[Documents]):\n    def __init__(self):\n        self.model = SentenceTransformer(\"answerdotai/ModernBERT-large\", trust_remote_code=True)\n\n    def __call__(self, input: Documents) -> Embeddings:\n        return self.model.encode(input).tolist()\n\nclass BGEEmbeddingFunction(EmbeddingFunction[Documents]):\n    def __init__(self):\n        self.model = SentenceTransformer(\"BAAI/bge-large-en-v1.5\")\n\n    def __call__(self, input: Documents) -> Embeddings:\n        return self.model.encode(input).tolist()\n\ndef get_embedding_function(model_name: str):\n    model_map = {\n        \"stella\": StellaEmbeddingFunction,\n        \"modernbert\": ModernBERTEmbeddingFunction,\n        \"bge-large\": BGEEmbeddingFunction\n    }\n    if model_name not in model_map:\n        raise ValueError(f\"Unknown embedding model: {model_name}. Available: {list(model_map.keys())}\")\n    return model_map[model_name]()\n'''; \
-with open('/chroma/embedding_functions.py', 'w') as f: f.write(embedding_code); \
-print('Custom embedding functions created')"
-
-# Set environment variables
+ENV SENTENCE_TRANSFORMERS_HOME=/models
 ENV CHROMA_EMBEDDING_MODEL=stella
-ENV CHROMA_SERVER_HOST=0.0.0.0
-ENV CHROMA_SERVER_HTTP_PORT=8000
-ENV IS_PERSISTENT=1
 
-# Add the embedding functions to Python path
+# Add embedding functions to Python path
 ENV PYTHONPATH=/chroma
 
-# Create startup script that validates models
-RUN echo '#!/bin/bash\necho "Starting Enhanced ChromaDB Server..."\necho "Available embedding models: stella, modernbert, bge-large"\necho "Current model: $CHROMA_EMBEDDING_MODEL"\necho ""\npython3 -c "import sys; sys.path.insert(0, \\"/chroma\\"); from embedding_functions import get_embedding_function; get_embedding_function(\\"stella\\"); print(\\"✓ Stella model validated\\"); get_embedding_function(\\"modernbert\\"); print(\\"✓ ModernBERT model validated\\"); get_embedding_function(\\"bge-large\\"); print(\\"✓ BGE-Large model validated\\"); print(\\"All embedding models ready!\\")"\necho "Starting ChromaDB server..."\nexec "$@"' > /chroma/start-enhanced-chroma.sh
+# Create enhanced entrypoint script
+RUN echo '#!/bin/bash\n\
+echo "Enhanced ChromaDB Server with External Model Cache"\n\
+echo "================================================"\n\
+echo "Available models: stella, modernbert, bge-large"\n\
+echo "Current model: $CHROMA_EMBEDDING_MODEL"\n\
+echo "Model cache: $TRANSFORMERS_CACHE"\n\
+echo ""\n\
+\n\
+# Ensure model cache directory exists\n\
+mkdir -p /models\n\
+\n\
+# Check if we have python available for model downloads\n\
+if command -v python3 >/dev/null 2>&1; then\n\
+    echo "Python available - models will be downloaded on first use"\n\
+    # Test that embedding functions can be imported\n\
+    python3 -c "import sys; sys.path.insert(0, \"/chroma\"); import embedding_functions; print(\"✓ Embedding functions ready\")" 2>/dev/null || echo "⚠️  Embedding functions may not be available"\n\
+else\n\
+    echo "⚠️  Python not found - using ChromaDB default embeddings"\n\
+fi\n\
+\n\
+echo "Starting ChromaDB server..."\n\
+exec "$@"\n\
+' > /chroma/enhanced-entrypoint.sh
 
-RUN chmod +x /chroma/start-enhanced-chroma.sh
+RUN chmod +x /chroma/enhanced-entrypoint.sh
 
-# Expose port
-EXPOSE 8000
+# Create smart model download script
+RUN echo '#!/bin/bash\n\
+echo "Enhanced ChromaDB Server with On-Demand Model Downloads"\n\
+echo "====================================================="\n\
+echo "Available models: stella, modernbert, bge-large, default"\n\
+echo "Requested model: $CHROMA_EMBEDDING_MODEL"\n\
+echo "Model cache: $TRANSFORMERS_CACHE"\n\
+echo ""\n\
+\n\
+# Ensure model cache directory exists\n\
+mkdir -p /models\n\
+\n\
+# Check if Python is available for model downloads\n\
+if ! command -v python3 >/dev/null 2>&1; then\n\
+    echo "⚠️  Python not found - using ChromaDB default embeddings"\n\
+    echo "Starting ChromaDB server..."\n\
+    exec dumb-init -- chroma "$@"\n\
+fi\n\
+\n\
+echo "✓ Python available for enhanced embeddings"\n\
+\n\
+# Define model mappings\n\
+case "$CHROMA_EMBEDDING_MODEL" in\n\
+    stella)\n\
+        MODEL_NAME="dunzhang/stella_en_400M_v5"\n\
+        MODEL_ARGS="trust_remote_code=True"\n\
+        ;;\n\
+    modernbert)\n\
+        MODEL_NAME="answerdotai/ModernBERT-large"\n\
+        MODEL_ARGS="trust_remote_code=True"\n\
+        ;;\n\
+    bge-large)\n\
+        MODEL_NAME="BAAI/bge-large-en-v1.5"\n\
+        MODEL_ARGS=""\n\
+        ;;\n\
+    default|"")\n\
+        echo "Using ChromaDB default embeddings"\n\
+        echo "Starting ChromaDB server..."\n\
+        exec dumb-init -- chroma "$@"\n\
+        ;;\n\
+    *)\n\
+        echo "❌ Unknown model: $CHROMA_EMBEDDING_MODEL"\n\
+        echo "Available: stella, modernbert, bge-large, default"\n\
+        exit 1\n\
+        ;;\n\
+esac\n\
+\n\
+echo "Checking model: $CHROMA_EMBEDDING_MODEL ($MODEL_NAME)"\n\
+\n\
+# Check if model is already cached by trying to load it quickly\n\
+MODEL_CACHED=$(python3 -c "\
+import os, sys\n\
+sys.path.insert(0, \"/chroma\")\n\
+try:\n\
+    from sentence_transformers import SentenceTransformer\n\
+    # Try to load model from cache (no download)\n\
+    model = SentenceTransformer(\"$MODEL_NAME\", cache_folder=\"/models\", local_files_only=True, $MODEL_ARGS)\n\
+    print(\"cached\")\n\
+except:\n\
+    print(\"missing\")\n\
+" 2>/dev/null)\n\
+\n\
+if [ "$MODEL_CACHED" = "cached" ]; then\n\
+    echo "✓ Model $CHROMA_EMBEDDING_MODEL already cached"\n\
+else\n\
+    echo "⬇️  Downloading model $CHROMA_EMBEDDING_MODEL..."\n\
+    echo "This may take 2-5 minutes depending on model size"\n\
+    python3 -c "\
+import os, sys\n\
+sys.path.insert(0, \"/chroma\")\n\
+from sentence_transformers import SentenceTransformer\n\
+print(\"Downloading $MODEL_NAME...\")\n\
+model = SentenceTransformer(\"$MODEL_NAME\", cache_folder=\"/models\", $MODEL_ARGS)\n\
+dims = model.get_sentence_embedding_dimension()\n\
+print(f\"✓ $CHROMA_EMBEDDING_MODEL ready ({dims} dimensions)\")\n\
+    "\n\
+fi\n\
+\n\
+# Verify embedding functions work\n\
+echo "Testing embedding functions..."\n\
+python3 -c "\
+import sys\n\
+sys.path.insert(0, \"/chroma\")\n\
+try:\n\
+    import embedding_functions\n\
+    ef = embedding_functions.get_embedding_function(\"$CHROMA_EMBEDDING_MODEL\")\n\
+    print(\"✓ Embedding functions ready for $CHROMA_EMBEDDING_MODEL\")\n\
+except Exception as e:\n\
+    print(f\"⚠️  Embedding function test failed: {e}\")\n\
+"\n\
+\n\
+echo ""\n\
+echo "Starting ChromaDB server with $CHROMA_EMBEDDING_MODEL embeddings..."\n\
+exec dumb-init -- chroma "$@"\n\
+' > /chroma/enhanced-init.sh && chmod +x /chroma/enhanced-init.sh
 
-# Use custom startup script
-ENTRYPOINT ["/chroma/start-enhanced-chroma.sh"]
-CMD ["chroma", "run", "--host", "0.0.0.0", "--port", "8000", "--path", "/chroma/data"]
+# Use enhanced init script that preserves ChromaDB entrypoint
+ENTRYPOINT ["/chroma/enhanced-init.sh"]
+CMD ["run", "/config.yaml"]
