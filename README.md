@@ -5,13 +5,19 @@ High-performance ChromaDB server with built-in support for multiple state-of-the
 ## 🚀 Quick Start
 
 ```bash
-# 1. Build the enhanced ChromaDB image (10-15 minutes)
+# 1. Install dependencies (includes EasyOCR)
+pip install .
+
+# 2. Verify OCR setup
+python3 check_deps.py
+
+# 3. Build the enhanced ChromaDB image (10-15 minutes)
 ./build.sh
 
-# 2. Start server with Stella-400m embeddings
+# 4. Start server with Stella-400m embeddings
 ./server.sh -m stella
 
-# 3. Upload PDFs with server-side embeddings (specify your PDF directory)
+# 5. Upload PDFs with OCR support (specify your PDF directory)
 ./upload.sh -i /path/to/your/pdfs -e stella --delete-collection -l 10
 ```
 
@@ -22,11 +28,49 @@ High-performance ChromaDB server with built-in support for multiple state-of-the
 | `Dockerfile` | Multi-model ChromaDB Docker image |
 | `build.sh` | Build script for Docker image |
 | `server.sh` | Server management script |
-| `upload.sh` | PDF upload script with embedding support |
+| `upload.sh` | PDF upload script with OCR support |
 | `test.sh` | Complete setup testing |
+| `check_deps.py` | Dependency checker for OCR setup |
 | `requirements.txt` | Python dependencies |
+| `pyproject.toml` | Modern Python packaging |
 | `.gitignore` | Git ignore rules |
 | `LICENSE` | MIT license |
+
+## 📋 Installation & Dependencies
+
+### Python Dependencies
+```bash
+# Install all dependencies (includes Tesseract Python wrapper)
+pip install .
+
+# Check all dependencies are working
+python3 check_deps.py
+
+# Development install
+pip install -e .[dev]
+```
+
+### OCR Engine Setup
+Choose your preferred OCR engine:
+
+**Option 1: Tesseract (Recommended - faster)**
+```bash
+# Install system dependency
+# macOS: brew install tesseract
+# Ubuntu/Debian: sudo apt-get install tesseract-ocr
+# CentOS/RHEL: sudo yum install tesseract
+
+# Python wrapper already installed with: pip install .
+# Ready to use (default engine)
+```
+
+**Option 2: EasyOCR (Pure Python - no system deps)**
+```bash
+# Install EasyOCR package
+pip install .[easyocr]
+
+# Use with --ocr-engine easyocr flag
+```
 
 ## 🎯 Available Embedding Models
 
@@ -65,9 +109,9 @@ High-performance ChromaDB server with built-in support for multiple state-of-the
 
 ## 📄 PDF Upload Examples
 
-### Basic Upload
+### Basic Upload (OCR Enabled by Default)
 ```bash
-# Upload with Stella embeddings
+# Upload with Stella embeddings and OCR
 ./upload.sh -i /path/to/pdfs -e stella
 
 # Upload first 5 files only
@@ -75,6 +119,24 @@ High-performance ChromaDB server with built-in support for multiple state-of-the
 
 # Fresh collection with ModernBERT
 ./upload.sh -i /path/to/pdfs -e modernbert --delete-collection
+```
+
+### OCR Options
+```bash
+# Tesseract is default (if system binary installed)
+./upload.sh -i /path/to/pdfs -e stella
+
+# Use EasyOCR engine (pure Python, no system deps)
+./upload.sh -i /path/to/pdfs -e stella --ocr-engine easyocr
+
+# OCR with different language (French for Tesseract)
+./upload.sh -i /path/to/pdfs -e stella --ocr-language fra
+
+# OCR with Spanish language and EasyOCR
+./upload.sh -i /path/to/pdfs -e stella --ocr-engine easyocr --ocr-language es
+
+# Disable OCR entirely (faster, but skips image PDFs)
+./upload.sh -i /path/to/pdfs -e stella --disable-ocr
 ```
 
 ### Advanced Options
@@ -155,11 +217,30 @@ docker ps
 # Test server connection
 curl http://localhost:9000/api/v2/heartbeat
 
-# Check dependencies
-python3 -c "import chromadb, fitz; print('✅ Dependencies OK')"
+# Check all dependencies including OCR
+python3 -c "import chromadb, fitz, easyocr, PIL; print('✅ All Dependencies OK')"
+
+# Test OCR functionality (EasyOCR)
+python3 -c "import easyocr; print('✅ EasyOCR available')"
+
+# Test Tesseract if using it
+python3 -c "import pytesseract; print('Tesseract Version:', pytesseract.get_tesseract_version())"
 
 # Use smaller test
 ./upload.sh -i /path/to/pdfs -e stella -l 1 -c TestCollection --delete-collection
+```
+
+### OCR Issues
+```bash
+# EasyOCR issues (should work out of the box)
+python3 -c "import easyocr; print('EasyOCR OK')"
+
+# Tesseract issues (if using --ocr-engine tesseract)
+tesseract --version
+pip install .[tesseract]
+
+# Test with OCR disabled if having issues
+./upload.sh -i /path/to/pdfs -e stella --disable-ocr -l 1 -c TestCollection --delete-collection
 ```
 
 ### Model Loading Issues
@@ -170,10 +251,12 @@ python3 -c "import chromadb, fitz; print('✅ Dependencies OK')"
 ## 🎓 Best Practices
 
 1. **Start with Stella**: Best overall performance for research papers
-2. **Use --delete-collection**: When changing embedding models
-3. **Monitor resources**: Models require significant memory
-4. **Backup collections**: Before major changes
-5. **Test thoroughly**: Use small uploads first
+2. **Enable OCR**: Processes image-only PDFs automatically (enabled by default)
+3. **Use --delete-collection**: When changing embedding models
+4. **Monitor resources**: Models and OCR require significant memory
+5. **Test OCR languages**: Use --ocr-language for non-English documents
+6. **Backup collections**: Before major changes
+7. **Test thoroughly**: Use small uploads first
 
 ## 🔌 Claude Code MCP Integration
 
@@ -212,6 +295,7 @@ python3 -c "import chromadb, fitz; print('✅ Dependencies OK')"
 
 ### Benefits
 - ✅ **Superior Embeddings**: Stella-400m vs default models
+- ✅ **OCR Support**: Automatically processes image-only PDFs
 - ✅ **Centralized Management**: One server for all embedding needs
 - ✅ **Research-Optimized**: Designed for PDF workflows
 

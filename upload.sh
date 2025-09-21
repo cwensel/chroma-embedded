@@ -17,6 +17,9 @@
 #   --chunk-size TOKENS        Chunk size in tokens (default: 3000)
 #   --chunk-overlap TOKENS     Chunk overlap in tokens (default: 600, 20% of chunk-size)
 #   --delete-collection        Delete and recreate the collection before upload
+#   --disable-ocr              Disable OCR for image PDFs (OCR enabled by default)
+#   --ocr-engine ENGINE        OCR engine: tesseract, easyocr (default: tesseract)
+#   --ocr-language LANG        OCR language code (default: eng)
 #   --help                     Show this help message
 #
 # Path Types:
@@ -45,6 +48,9 @@ EMBEDDING_MODEL="stella"
 CHUNK_SIZE="3000"
 CHUNK_OVERLAP="600"
 DELETE_COLLECTION="false"
+OCR_ENABLED="true"
+OCR_ENGINE="tesseract"
+OCR_LANGUAGE="eng"
 
 # Function to show help
 show_help() {
@@ -61,6 +67,9 @@ show_help() {
     echo "  --chunk-size TOKENS        Chunk size in tokens (default: 3000)"
     echo "  --chunk-overlap TOKENS     Chunk overlap in tokens (default: 600, 20% of chunk-size)"
     echo "  --delete-collection        Delete and recreate the collection before upload"
+    echo "  --disable-ocr              Disable OCR for image PDFs (OCR enabled by default)"
+    echo "  --ocr-engine ENGINE        OCR engine: tesseract, easyocr (default: tesseract)"
+    echo "  --ocr-language LANG        OCR language code (default: eng)"
     echo "  --help                     Show this help message"
     echo ""
     echo "Path Types:"
@@ -134,6 +143,18 @@ while [[ $# -gt 0 ]]; do
             DELETE_COLLECTION="true"
             shift
             ;;
+        --disable-ocr)
+            OCR_ENABLED="false"
+            shift
+            ;;
+        --ocr-engine)
+            OCR_ENGINE="$2"
+            shift 2
+            ;;
+        --ocr-language)
+            OCR_LANGUAGE="$2"
+            shift 2
+            ;;
         --help)
             show_help
             exit 0
@@ -158,6 +179,18 @@ case "$EMBEDDING_MODEL" in
     *)
         echo "❌ Invalid embedding model: $EMBEDDING_MODEL"
         echo "Valid options: stella, modernbert, bge-large, default"
+        echo "Use --help for more information"
+        exit 1
+        ;;
+esac
+
+# Validate OCR engine
+case "$OCR_ENGINE" in
+    tesseract|easyocr)
+        ;;
+    *)
+        echo "❌ Invalid OCR engine: $OCR_ENGINE"
+        echo "Valid options: tesseract, easyocr"
         echo "Use --help for more information"
         exit 1
         ;;
@@ -210,6 +243,11 @@ case "$EMBEDDING_MODEL" in
 esac
 echo "Chunk size: $CHUNK_SIZE tokens"
 echo "Chunk overlap: $CHUNK_OVERLAP tokens"
+echo "OCR enabled: $OCR_ENABLED"
+if [ "$OCR_ENABLED" = "true" ]; then
+    echo "  → OCR engine: $OCR_ENGINE"
+    echo "  → OCR language: $OCR_LANGUAGE"
+fi
 if [ "$DELETE_COLLECTION" = "true" ]; then
     echo "⚠ Collection will be deleted and recreated"
 fi
@@ -225,12 +263,14 @@ python3 -c "
 try:
     import chromadb
     import fitz  # pymupdf
-    print('✓ Required packages available')
+    import PIL  # Pillow
+    import packaging.version
+    print('✓ Core packages available')
     print(f'  chromadb version: {chromadb.__version__}')
     print(f'  pymupdf version: {fitz.version[0]}')
+    print(f'  pillow version: {PIL.__version__}')
 
     # Verify ChromaDB version compatibility
-    import packaging.version
     min_version = '1.0.0'
     if packaging.version.parse(chromadb.__version__) < packaging.version.parse(min_version):
         print(f'⚠ Warning: ChromaDB version {chromadb.__version__} may not be compatible')
@@ -238,17 +278,58 @@ try:
     else:
         print(f'✓ ChromaDB version {chromadb.__version__} is compatible')
 
+    # Check OCR dependencies if enabled
+    ocr_enabled = '$OCR_ENABLED' == 'true'
+    ocr_engine = '$OCR_ENGINE'
+
+    if ocr_enabled:
+        ocr_available = False
+        if ocr_engine == 'tesseract':
+            try:
+                import pytesseract
+                # Test tesseract binary
+                version = pytesseract.get_tesseract_version()
+                print(f'✓ Tesseract OCR available (version: {version})')
+                ocr_available = True
+            except Exception as e:
+                print(f'❌ Tesseract OCR not available: {e}')
+                print('  System dependency required. Install with:')
+                print('    macOS: brew install tesseract')
+                print('    Ubuntu/Debian: sudo apt-get install tesseract-ocr')
+                print('    CentOS/RHEL: sudo yum install tesseract')
+                print('  Or use EasyOCR (no system deps): pip install .[easyocr] --ocr-engine easyocr')
+                print('  Or disable OCR with: --disable-ocr')
+        elif ocr_engine == 'easyocr':
+            try:
+                import easyocr
+                print('✓ EasyOCR available (pure Python, no system dependencies)')
+                ocr_available = True
+            except ImportError:
+                print('❌ EasyOCR not available')
+                print('  Install with: pip install .[easyocr]')
+                print('  Or use tesseract: --ocr-engine tesseract')
+                print('  Or disable OCR with: --disable-ocr')
+
+        if not ocr_available:
+            print('❌ OCR dependencies not met - exiting')
+            print('  Fix dependencies or use --disable-ocr flag')
+            exit(1)
+        else:
+            print(f'ℹ️ OCR enabled with {ocr_engine} engine')
+    else:
+        print('ℹ️ OCR disabled - image PDFs will be skipped')
+
     # Note about server-side embeddings
     print('ℹ️ Using server-side embeddings - no local ML models required')
 
 except ImportError as e:
     print(f'✗ Missing package: {e}')
-    print('Install with: pip install --upgrade chromadb pymupdf')
+    print('Install dependencies with: pip install .')
     exit(1)
 " 2>&1 | tee -a "$LOG_FILE"
 
 if [ $? -ne 0 ]; then
-    echo "Please install required packages: pip install --upgrade chromadb pymupdf"
+    echo "Please install required packages: pip install ."
     exit 1
 fi
 
@@ -511,6 +592,9 @@ try:
     chunk_size = int(sys.argv[7]) if len(sys.argv) > 7 else 3000
     chunk_overlap = int(sys.argv[8]) if len(sys.argv) > 8 else 600
     embedding_model = sys.argv[9] if len(sys.argv) > 9 else 'stella'
+    ocr_enabled = sys.argv[10] if len(sys.argv) > 10 else 'true'
+    ocr_engine = sys.argv[11] if len(sys.argv) > 11 else 'tesseract'
+    ocr_language = sys.argv[12] if len(sys.argv) > 12 else 'eng'
     filename = os.path.basename(pdf_path)
 
     # Extract text with pymupdf
@@ -526,10 +610,126 @@ try:
 
     doc.close()
 
-    # Skip if no text extracted
+    # OCR fallback for image PDFs
+    extraction_method = 'pymupdf'
+    ocr_confidence = None
+    is_image_pdf = False
+
     if not text.strip():
-        print(f'No text extracted from {pdf_path}')
-        sys.exit(3)  # Special exit code for no text
+        if ocr_enabled.lower() == 'true':
+            print(f'No text found, attempting OCR with {ocr_engine} engine...')
+            is_image_pdf = True
+
+            # Check OCR dependencies first
+            ocr_available = False
+            try:
+                if ocr_engine == 'tesseract':
+                    import pytesseract
+                    # Quick test of tesseract binary
+                    pytesseract.get_tesseract_version()
+                    ocr_available = True
+                elif ocr_engine == 'easyocr':
+                    import easyocr
+                    ocr_available = True
+            except Exception as dep_error:
+                print(f'OCR dependencies not available: {dep_error}')
+                print(f'Skipping OCR for {pdf_path}')
+                sys.exit(3)  # Special exit code for no text
+
+            if not ocr_available:
+                print(f'OCR engine {ocr_engine} not available')
+                print(f'Skipping OCR for {pdf_path}')
+                sys.exit(3)
+
+            try:
+                # Re-open document for OCR
+                doc = fitz.open(pdf_path)
+                ocr_text_parts = []
+                confidence_scores = []
+
+                for page_num in range(len(doc)):
+                    page = doc.load_page(page_num)
+                    # Convert page to image
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))  # 2x scale for better OCR
+                    img_data = pix.tobytes("png")
+
+                    if ocr_engine == 'tesseract':
+                        import pytesseract
+                        from PIL import Image
+                        import io
+
+                        # Convert to PIL Image
+                        image = Image.open(io.BytesIO(img_data))
+
+                        # Perform OCR with confidence data
+                        try:
+                            data = pytesseract.image_to_data(image, lang=ocr_language, output_type=pytesseract.Output.DICT)
+                            page_text = pytesseract.image_to_string(image, lang=ocr_language)
+
+                            # Calculate average confidence for this page
+                            confidences = [int(conf) for conf in data['conf'] if int(conf) > 0]
+                            if confidences:
+                                confidence_scores.extend(confidences)
+
+                        except Exception as e:
+                            print(f'  Warning: OCR failed for page {page_num + 1}: {e}')
+                            page_text = ''
+
+                    elif ocr_engine == 'easyocr':
+                        import easyocr
+                        import numpy as np
+                        from PIL import Image
+                        import io
+
+                        # Convert to numpy array for EasyOCR
+                        image = Image.open(io.BytesIO(img_data))
+                        img_array = np.array(image)
+
+                        try:
+                            reader = easyocr.Reader([ocr_language])
+                            results = reader.readtext(img_array, detail=1)  # Get confidence scores
+
+                            page_text = ' '.join([result[1] for result in results])
+                            page_confidences = [result[2] * 100 for result in results]  # Convert to percentage
+                            confidence_scores.extend(page_confidences)
+
+                        except Exception as e:
+                            print(f'  Warning: OCR failed for page {page_num + 1}: {e}')
+                            page_text = ''
+
+                    else:
+                        page_text = ''
+
+                    if page_text.strip():
+                        ocr_text_parts.append(page_text)
+                        print(f'  Page {page_num + 1}: {len(page_text)} characters extracted')
+
+                doc.close()
+
+                # Combine all OCR text
+                text = '\\n'.join(ocr_text_parts)
+
+                if text.strip():
+                    extraction_method = f'ocr_{ocr_engine}'
+                    if confidence_scores:
+                        ocr_confidence = sum(confidence_scores) / len(confidence_scores)
+                        print(f'OCR completed: {len(text)} characters, avg confidence: {ocr_confidence:.1f}%')
+                    else:
+                        print(f'OCR completed: {len(text)} characters')
+                else:
+                    print(f'OCR failed to extract any text from {pdf_path}')
+                    sys.exit(3)  # Special exit code for no text
+
+            except ImportError as e:
+                print(f'OCR library not available: {e}')
+                print(f'Install with: pip install {ocr_engine}')
+                sys.exit(3)
+            except Exception as e:
+                print(f'OCR processing failed: {e}')
+                sys.exit(3)
+        else:
+            print(f'No text extracted from {pdf_path} (OCR disabled)')
+            sys.exit(3)  # Special exit code for no text
 
     # Simple chunking function (approximating 4 chars per token)
     def chunk_text(text, chunk_size_tokens=3000, overlap_tokens=600):
@@ -607,7 +807,7 @@ try:
             'file_path': pdf_path,
             'file_size': os.path.getsize(pdf_path),
             'upload_date': upload_date,
-            'extractor': 'pymupdf',
+            'text_extraction_method': extraction_method,
             'text_length': len(text),
             'chunk_index': i,
             'chunk_count': len(chunks),
@@ -618,7 +818,12 @@ try:
             'storage': f'{chroma_host}:{chroma_port}' if client_type == 'remote' else data_dir,
             'full_document': False,
             'is_chunked': True,
-            'is_new_upload': True
+            'is_new_upload': True,
+            'is_image_pdf': is_image_pdf,
+            'ocr_enabled': ocr_enabled.lower() == 'true',
+            'ocr_engine': ocr_engine if is_image_pdf else None,
+            'ocr_language': ocr_language if is_image_pdf else None,
+            'ocr_confidence': ocr_confidence
         }
         chunk_metadatas.append(chunk_metadata)
 
@@ -639,7 +844,7 @@ except Exception as e:
 EOF
 
     # Run the Python script (capture exit code properly)
-    python3 "$temp_script" "$pdf_file" "$collection_name" "$client_type" "$chroma_host" "$chroma_port" "$data_dir" "$CHUNK_SIZE" "$CHUNK_OVERLAP" "$EMBEDDING_MODEL" 2>&1 | tee -a "$log_file"
+    python3 "$temp_script" "$pdf_file" "$collection_name" "$client_type" "$chroma_host" "$chroma_port" "$data_dir" "$CHUNK_SIZE" "$CHUNK_OVERLAP" "$EMBEDDING_MODEL" "$OCR_ENABLED" "$OCR_ENGINE" "$OCR_LANGUAGE" 2>&1 | tee -a "$log_file"
     local python_exit_code=${PIPESTATUS[0]}
     
     # Clean up temp file
