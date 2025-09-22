@@ -17,7 +17,11 @@
 #   --store TYPE               Store type: pdf, source-code, documentation [default: pdf]
 #   --chunk-size TOKENS        Chunk size in tokens (default: 3000 for pdf, 2000 for source-code)
 #   --chunk-overlap TOKENS     Chunk overlap in tokens (default: 600 for pdf, 200 for source-code)
+#   --batch-size NUMBER        Upload batch size to avoid payload limits (default: 50)
 #   --delete-collection        Delete and recreate the collection before upload
+#   --delete-project NAME      Delete specific git project from collection
+#   --delete-failed-project    Auto-delete project if any upload fails
+#   --dry-run                  Preview chunk sizes without uploading
 #   --disable-ocr              Disable OCR for image PDFs (OCR enabled by default)
 #   --ocr-engine ENGINE        OCR engine: tesseract, easyocr (default: tesseract)
 #   --ocr-language LANG        OCR language code (default: eng)
@@ -48,7 +52,11 @@ CLIENT_TYPE="remote"
 EMBEDDING_MODEL="stella"
 CHUNK_SIZE="3000"
 CHUNK_OVERLAP="600"
+BATCH_SIZE="50"
 DELETE_COLLECTION="false"
+DELETE_PROJECT=""
+DELETE_FAILED_PROJECT="false"
+DRY_RUN="false"
 OCR_ENABLED="true"
 OCR_ENGINE="tesseract"
 OCR_LANGUAGE="eng"
@@ -70,8 +78,12 @@ show_help() {
     echo "  --store TYPE               Store type: pdf, source-code, documentation [default: pdf]"
     echo "  --chunk-size TOKENS        Chunk size in tokens (default: 3000 for pdf, 2000 for source-code)"
     echo "  --chunk-overlap TOKENS     Chunk overlap in tokens (default: 600 for pdf, 200 for source-code)"
+    echo "  --batch-size NUMBER        Upload batch size to avoid payload limits (default: 50)"
     echo "  --depth LEVELS             Git project search depth (1=direct subdirs only, default: unlimited)"
     echo "  --delete-collection        Delete and recreate the collection before upload"
+    echo "  --delete-project NAME      Delete specific git project from collection"
+    echo "  --delete-failed-project    Auto-delete project if any upload fails"
+    echo "  --dry-run                  Preview chunk sizes without uploading"
     echo "  --disable-ocr              Disable OCR for image PDFs (OCR enabled by default)"
     echo "  --ocr-engine ENGINE        OCR engine: tesseract, easyocr (default: tesseract)"
     echo "  --ocr-language LANG        OCR language code (default: eng)"
@@ -107,6 +119,16 @@ show_help() {
     echo ""
     echo "  # Advanced options"
     echo "  $0 -i /path/to/files --store pdf --delete-collection -c MyCollection -e stella --chunk-size 2000"
+    echo ""
+    echo "  # Handling large files (if you get payload size errors)"
+    echo "  $0 -i /path/to/source --store source-code --batch-size 25 --chunk-size 1000"
+    echo ""
+    echo "  # Project cleanup and recovery"
+    echo "  $0 --delete-project my-project-name  # Delete specific project"
+    echo "  $0 -i /path/to/source --store source-code --delete-failed-project  # Auto-cleanup on failure"
+    echo ""
+    echo "  # Preview and optimize settings"
+    echo "  $0 -i /path/to/source --store source-code --dry-run  # Preview chunk sizes"
 }
 
 # Parse command line arguments
@@ -153,8 +175,24 @@ while [[ $# -gt 0 ]]; do
             CHUNK_OVERLAP="$2"
             shift 2
             ;;
+        --batch-size)
+            BATCH_SIZE="$2"
+            shift 2
+            ;;
         --delete-collection)
             DELETE_COLLECTION="true"
+            shift
+            ;;
+        --delete-project)
+            DELETE_PROJECT="$2"
+            shift 2
+            ;;
+        --delete-failed-project)
+            DELETE_FAILED_PROJECT="true"
+            shift
+            ;;
+        --dry-run)
+            DRY_RUN="true"
             shift
             ;;
         --disable-ocr)
@@ -406,8 +444,8 @@ find_files() {
     fi
 }
 
-# Validate that input path is provided
-if [ -z "$INPUT_PATH" ]; then
+# Validate that input path is provided (unless doing project deletion only)
+if [ -z "$INPUT_PATH" ] && [ -z "$DELETE_PROJECT" ]; then
     echo "❌ Error: Input path is required"
     echo ""
     echo "Please specify the PDF input path using one of these methods:"
@@ -421,15 +459,21 @@ fi
 LOG_FILE="/tmp/upload_new_log_$(date +%Y%m%d_%H%M%S).txt"
 MAX_PARALLEL_JOBS=$(sysctl -n hw.ncpu)  # Use number of CPU cores
 
-# Validate input path exists
-if [ ! -d "$INPUT_PATH" ]; then
+# Validate input path exists (unless doing project deletion only)
+if [ -n "$INPUT_PATH" ] && [ ! -d "$INPUT_PATH" ]; then
     echo "❌ Input path does not exist: $INPUT_PATH"
     exit 1
 fi
 
-echo "Starting SMART PDF upload to ChromaDB with Enhanced Embeddings"
-echo "Collection: $COLLECTION_NAME"
-echo "Input path: $INPUT_PATH"
+# Skip main intro for project deletion mode
+if [ -z "$DELETE_PROJECT" ]; then
+    echo "Starting SMART PDF upload to ChromaDB with Enhanced Embeddings"
+    echo "Collection: $COLLECTION_NAME"
+    echo "Input path: $INPUT_PATH"
+else
+    echo "ChromaDB Project Management"
+    echo "Collection: $COLLECTION_NAME"
+fi
 echo "Client type: $CLIENT_TYPE"
 if [ "$CLIENT_TYPE" = "remote" ]; then
     echo "ChromaDB: $CHROMA_HOST:$CHROMA_PORT"
@@ -566,6 +610,138 @@ else
     echo "✅ Using persistence client (data path: $CHROMA_DATA_DIR)"
     # Create data directory if it doesn't exist
     mkdir -p "$CHROMA_DATA_DIR"
+fi
+
+# Handle project deletion if requested
+if [ -n "$DELETE_PROJECT" ]; then
+    echo ""
+    echo "🗑️ Deleting project '$DELETE_PROJECT' from collection '$COLLECTION_NAME'..."
+
+    python3 -c "
+import chromadb
+import sys
+
+try:
+    if '$CLIENT_TYPE' == 'remote':
+        client = chromadb.HttpClient(host='$CHROMA_HOST', port=$CHROMA_PORT)
+    else:
+        client = chromadb.PersistentClient(path='$CHROMA_DATA_DIR')
+
+    try:
+        collection = client.get_collection('$COLLECTION_NAME')
+        print(f'Found collection: {collection.name}')
+
+        # Query for documents from this project (try by project name first)
+        existing_docs = collection.get(
+            where={'git_project_name': '$DELETE_PROJECT'},
+            include=['metadatas'],
+            limit=10  # Just need to check if project exists
+        )
+
+        # If not found by name, try by project root path containing the name
+        if not existing_docs['ids']:
+            all_docs = collection.get(include=['metadatas'], limit=1000)
+            matching_ids = []
+            for i, metadata in enumerate(all_docs['metadatas']):
+                if metadata and 'git_project_root' in metadata:
+                    if '$DELETE_PROJECT' in metadata['git_project_root']:
+                        matching_ids.append(all_docs['ids'][i])
+
+            if matching_ids:
+                existing_docs = {'ids': matching_ids[:10], 'metadatas': [all_docs['metadatas'][all_docs['ids'].index(id)] for id in matching_ids[:10]]}
+
+        if not existing_docs['ids']:
+            print(f'⚠️  Project \"$DELETE_PROJECT\" not found in collection')
+            print('Available projects:')
+
+            # Get sample of all projects
+            all_docs = collection.get(include=['metadatas'], limit=100)
+            projects = set()
+            for metadata in all_docs['metadatas']:
+                if metadata and 'git_project_name' in metadata:
+                    projects.add(metadata['git_project_name'])
+
+            if projects:
+                for project in sorted(projects):
+                    print(f'  - {project}')
+            else:
+                print('  (No git projects found)')
+
+            sys.exit(1)
+
+        print(f'Found project \"$DELETE_PROJECT\" - deleting all chunks...')
+
+        # Get all document IDs for this project in batches
+        all_project_ids = []
+        batch_size = 1000
+        offset = 0
+
+        while True:
+            # Get documents by project name
+            batch = collection.get(
+                where={'git_project_name': '$DELETE_PROJECT'},
+                include=['metadatas'],
+                limit=batch_size,
+                offset=offset
+            )
+
+            # If no more by name, try by project root path
+            if not batch['ids'] and offset == 0:
+                all_docs = collection.get(include=['metadatas'], limit=10000)
+                matching_ids = []
+                for i, metadata in enumerate(all_docs['metadatas']):
+                    if metadata and 'git_project_root' in metadata:
+                        if '$DELETE_PROJECT' in metadata['git_project_root']:
+                            matching_ids.append(all_docs['ids'][i])
+
+                # Create batch structure from matching IDs
+                if matching_ids:
+                    batch_ids = matching_ids[offset:offset+batch_size]
+                    batch = {'ids': batch_ids, 'metadatas': [all_docs['metadatas'][all_docs['ids'].index(id)] for id in batch_ids]}
+
+            if not batch['ids']:
+                break
+
+            all_project_ids.extend(batch['ids'])
+            offset += batch_size
+
+            if len(batch['ids']) < batch_size:
+                break
+
+        if all_project_ids:
+            # Delete in batches (ChromaDB delete has limits)
+            delete_batch_size = 100
+            deleted_count = 0
+
+            for i in range(0, len(all_project_ids), delete_batch_size):
+                batch_ids = all_project_ids[i:i+delete_batch_size]
+                collection.delete(ids=batch_ids)
+                deleted_count += len(batch_ids)
+
+            print(f'✅ Deleted {deleted_count} chunks from project \"$DELETE_PROJECT\"')
+        else:
+            print('⚠️  No chunks found to delete')
+
+    except Exception as e:
+        if 'does not exist' in str(e):
+            print(f'❌ Collection \"$COLLECTION_NAME\" does not exist')
+        else:
+            print(f'❌ Error accessing collection: {e}')
+        sys.exit(1)
+
+except Exception as e:
+    print(f'❌ Error connecting to ChromaDB: {e}')
+    sys.exit(1)
+" 2>&1 | tee -a "$LOG_FILE"
+
+    if [ $? -eq 0 ]; then
+        echo "✅ Project deletion completed successfully"
+        echo "You can now re-run the upload command to re-index the project"
+        exit 0
+    else
+        echo "❌ Project deletion failed"
+        exit 1
+    fi
 fi
 
 # Handle collection deletion if requested
@@ -907,6 +1083,137 @@ if [ -n "$UPLOAD_LIMIT" ] && [ "$new_files_count" -gt "$UPLOAD_LIMIT" ]; then
 fi
 
 echo ""
+if [ "$DRY_RUN" = "true" ]; then
+    echo "🔍 DRY RUN: Analyzing $new_files_count files for chunk size optimization..."
+    echo ""
+
+    # Dry-run analysis function
+    analyze_file_chunks() {
+        local file_path="$1"
+        local filename=$(basename "$file_path")
+        echo "Analyzing: $filename"
+
+        # Create a simple analysis script
+        python3 -c "
+import os
+import sys
+
+file_path = sys.argv[1]
+store_type = sys.argv[2]
+chunk_size = int(sys.argv[3])
+chunk_overlap = int(sys.argv[4])
+filename = os.path.basename(file_path)
+
+# Read file content
+try:
+    if store_type == 'pdf':
+        # For dry run, just read as text if it's actually a text file
+        # In real scenario, we'd use pymupdf
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                text = f.read()
+        except:
+            # Estimate based on file size for binary PDFs
+            file_size = os.path.getsize(file_path)
+            estimated_chars = file_size // 2  # Rough estimate
+            text = 'x' * estimated_chars
+    else:
+        # Source code or documentation
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                text = f.read()
+        except UnicodeDecodeError:
+            with open(file_path, 'r', encoding='latin-1') as f:
+                text = f.read()
+
+    # Simple chunking simulation
+    chars_per_token = 4
+    chunk_size_chars = chunk_size * chars_per_token
+    overlap_chars = chunk_overlap * chars_per_token
+
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + chunk_size_chars
+        chunk = text[start:end]
+        if chunk.strip():
+            chunks.append(len(chunk))
+        start = end - overlap_chars
+        if start >= len(text):
+            break
+
+    file_size = os.path.getsize(file_path)
+    total_chars = len(text)
+    chunk_count = len(chunks)
+    largest_chunk = max(chunks) if chunks else 0
+    avg_chunk = sum(chunks) // len(chunks) if chunks else 0
+
+    # Analyze if chunks are too large
+    problematic = largest_chunk > 50000  # 50KB limit
+    batch_payload = sum(chunks[:50])  # First 50 chunks (default batch size)
+
+    print(f'  File size: {file_size:,} bytes')
+    print(f'  Text length: {total_chars:,} chars')
+    print(f'  Chunks: {chunk_count}')
+    print(f'  Avg chunk: {avg_chunk:,} chars')
+    print(f'  Largest chunk: {largest_chunk:,} chars')
+    print(f'  Batch payload (50 chunks): {batch_payload:,} chars')
+
+    if problematic:
+        print(f'  ⚠️  POTENTIAL ISSUE: Largest chunk > 50KB')
+        # Suggest better chunk size
+        target_chunk_size = max(500, int(40000 / chars_per_token))  # 40KB target
+        print(f'  💡 SUGGESTION: --chunk-size {target_chunk_size}')
+        sys.exit(1)
+    else:
+        print(f'  ✓ Chunks look good')
+        sys.exit(0)
+
+except Exception as e:
+    print(f'  ❌ Error analyzing {filename}: {e}')
+    sys.exit(1)
+" "$file_path" "$STORE_TYPE" "$CHUNK_SIZE" "$CHUNK_OVERLAP"
+
+        return $?
+    }
+
+    # Analyze files
+    problem_count=0
+    total_analyzed=0
+
+    while IFS= read -r file_path; do
+        if analyze_file_chunks "$file_path"; then
+            echo ""
+        else
+            ((problem_count++))
+            echo ""
+        fi
+        ((total_analyzed++))
+
+        # Limit analysis for performance
+        if [ "$total_analyzed" -ge 20 ]; then
+            echo "... (analyzed first 20 files for performance)"
+            break
+        fi
+    done < "$NEW_FILES_LIST"
+
+    echo "📊 DRY RUN SUMMARY:"
+    echo "Files analyzed: $total_analyzed"
+    echo "Potential problems: $problem_count"
+
+    if [ "$problem_count" -gt 0 ]; then
+        echo ""
+        echo "💡 RECOMMENDATIONS:"
+        echo "1. Reduce chunk size: --chunk-size 1000 --batch-size 25"
+        echo "2. Use dry-run with adjusted settings to verify improvements"
+        echo "3. Consider excluding very large minified files"
+    else
+        echo "✅ Current settings should work well!"
+    fi
+
+    exit 0
+fi
+
 echo "Starting upload of $new_files_count new files..."
 
 # Function to process a single PDF file
@@ -947,6 +1254,7 @@ try:
     ocr_engine = sys.argv[11] if len(sys.argv) > 11 else 'tesseract'
     ocr_language = sys.argv[12] if len(sys.argv) > 12 else 'eng'
     store_type = sys.argv[13] if len(sys.argv) > 13 else 'pdf'
+    batch_size = int(sys.argv[14]) if len(sys.argv) > 14 else 50
     filename = os.path.basename(pdf_path)
 
     # Get git metadata for source-code files
@@ -1349,12 +1657,79 @@ try:
             })
         chunk_metadatas.append(chunk_metadata)
 
-    # Add all chunks to collection in batch
-    collection.add(
-        documents=chunk_documents,
-        metadatas=chunk_metadatas,
-        ids=chunk_ids
-    )
+    # Add chunks to collection in batches to avoid payload size limits
+    # ChromaDB HTTP client has payload limits, so batch large files
+    # batch_size is passed as parameter from command line (default 50)
+
+    for i in range(0, len(chunks), batch_size):
+        batch_end = min(i + batch_size, len(chunks))
+        batch_documents = chunk_documents[i:batch_end]
+        batch_metadatas = chunk_metadatas[i:batch_end]
+        batch_ids = chunk_ids[i:batch_end]
+
+        try:
+            collection.add(
+                documents=batch_documents,
+                metadatas=batch_metadatas,
+                ids=batch_ids
+            )
+            if len(chunks) > batch_size:
+                print(f'  Uploaded batch {i//batch_size + 1}/{(len(chunks) + batch_size - 1)//batch_size}: {len(batch_documents)} chunks')
+        except Exception as batch_error:
+            error_msg = str(batch_error)
+
+            # Check if it's a payload size error
+            if 'payload too large' in error_msg.lower() or '413' in error_msg:
+                print(f'❌ PAYLOAD TOO LARGE ERROR')
+                print(f'📁 File: {pdf_path}')
+                print(f'📊 File size: {os.path.getsize(pdf_path):,} bytes')
+                print(f'🧩 Total chunks: {len(chunks)}')
+                print(f'📦 Batch size: {batch_size} chunks')
+                print(f'💾 Batch payload: ~{sum(len(doc) for doc in batch_documents):,} characters')
+                print()
+
+                # Find the largest chunks in this batch for analysis
+                chunk_sizes = [(len(batch_documents[j]), batch_ids[j]) for j in range(len(batch_documents))]
+                chunk_sizes.sort(reverse=True)  # Largest first
+
+                print('🔍 Largest chunks in failed batch:')
+                for size, chunk_id in chunk_sizes[:3]:  # Show top 3
+                    print(f'   {chunk_id}: {size:,} chars')
+                print()
+
+                # Calculate suggested chunk size (aim for max 10KB per chunk)
+                max_chunk_size = max(size for size, _ in chunk_sizes)
+                target_chunk_chars = 10000  # 10KB target
+                suggested_tokens = max(500, int(target_chunk_chars / 4))  # ~4 chars per token
+
+                print('💡 RECOMMENDATIONS:')
+                print(f'   Current chunk size: {chunk_size} tokens')
+                print(f'   Largest chunk generated: {max_chunk_size:,} chars')
+                print(f'   Suggested chunk size: {suggested_tokens} tokens')
+                print(f'   Suggested batch size: 25 (current: {batch_size})')
+                print()
+                print('🔧 RECOVERY OPTIONS:')
+                print('   1. Reduce chunk size and batch size:')
+                print(f'      --chunk-size {suggested_tokens} --batch-size 25')
+
+                # Add project deletion option for source-code store
+                if store_type == 'source-code' and git_metadata:
+                    project_name = git_metadata.get('git_project_name', 'unknown')
+                    print(f'   2. Delete partial project and retry:')
+                    print(f'      --delete-project {project_name}')
+
+                print('   3. Skip this file and continue:')
+                print('      Add file to exclusion list (manual)')
+                print()
+                print(f'❌ STOPPING: Cannot upload {filename} - chunks too large')
+
+                # Exit with specific code for payload errors
+                sys.exit(4)  # New exit code for payload errors
+
+            else:
+                # Non-payload error, re-raise
+                print(f'Error uploading batch {i//batch_size + 1}: {error_msg}')
+                raise batch_error
 
     print(f'Successfully uploaded: {filename} ({len(chunks)} chunks, {len(text)} total chars)')
     
@@ -1366,7 +1741,7 @@ except Exception as e:
 EOF
 
     # Run the Python script (capture exit code properly)
-    python3 "$temp_script" "$pdf_file" "$collection_name" "$client_type" "$chroma_host" "$chroma_port" "$data_dir" "$CHUNK_SIZE" "$CHUNK_OVERLAP" "$EMBEDDING_MODEL" "$OCR_ENABLED" "$OCR_ENGINE" "$OCR_LANGUAGE" "$STORE_TYPE" 2>&1 | tee -a "$log_file"
+    python3 "$temp_script" "$pdf_file" "$collection_name" "$client_type" "$chroma_host" "$chroma_port" "$data_dir" "$CHUNK_SIZE" "$CHUNK_OVERLAP" "$EMBEDDING_MODEL" "$OCR_ENABLED" "$OCR_ENGINE" "$OCR_LANGUAGE" "$STORE_TYPE" "$BATCH_SIZE" 2>&1 | tee -a "$log_file"
     local python_exit_code=${PIPESTATUS[0]}
     
     # Clean up temp file
@@ -1381,6 +1756,9 @@ EOF
     elif [ $python_exit_code -eq 3 ]; then
         echo "  ⚪ No text extracted: $filename"
         return 3
+    elif [ $python_exit_code -eq 4 ]; then
+        echo "  💥 Payload too large: $filename"
+        return 4  # Payload error - this will trigger failure handling
     else
         echo "  ✗ Failed: $filename"
         return 1
@@ -1460,22 +1838,89 @@ rm -f "$WRAPPER_SCRIPT"
 # Count results
 if [ -f "$RESULT_FILE" ]; then
     success_count=$(grep -c "^0$" "$RESULT_FILE" 2>/dev/null || echo "0")
-    error_count=$(grep -c "^1$" "$RESULT_FILE" 2>/dev/null || echo "0") 
+    error_count=$(grep -c "^1$" "$RESULT_FILE" 2>/dev/null || echo "0")
     no_text_count=$(grep -c "^3$" "$RESULT_FILE" 2>/dev/null || echo "0")
-    
-# Debug output removed for clean operation
-    
+    payload_error_count=$(grep -c "^4$" "$RESULT_FILE" 2>/dev/null || echo "0")
+
+    # Handle payload errors - if any files failed due to size, stop here
+    if [ "$payload_error_count" -gt 0 ]; then
+        echo ""
+        echo "💥 UPLOAD STOPPED: $payload_error_count file(s) failed due to payload size limits"
+        echo ""
+        echo "🔧 WHAT TO DO:"
+        echo "1. Check the error details above for specific recommendations"
+        echo "2. Use smaller chunk sizes: --chunk-size 800 --batch-size 25"
+        echo "3. If this is a git project and you want to clean up partial uploads:"
+        echo "   Re-run with --delete-project PROJECT_NAME to remove partial data"
+        echo ""
+
+        # Auto-delete failed project if requested and we can identify it
+        if [ "$DELETE_FAILED_PROJECT" = "true" ] && [ "$STORE_TYPE" = "source-code" ]; then
+            echo "🗑️ Auto-deleting failed projects (--delete-failed-project enabled)..."
+
+            # Try to identify failed projects from the log
+            failed_projects=$(grep -E "git_project_name.*:" "$LOG_FILE" | tail -5 | cut -d: -f2 | sort -u | tr -d ' ')
+
+            if [ -n "$failed_projects" ]; then
+                for project in $failed_projects; do
+                    echo "Deleting project: $project"
+                    # Use the same deletion logic as above
+                    python3 -c "
+import chromadb
+
+try:
+    if '$CLIENT_TYPE' == 'remote':
+        client = chromadb.HttpClient(host='$CHROMA_HOST', port=$CHROMA_PORT)
+    else:
+        client = chromadb.PersistentClient(path='$CHROMA_DATA_DIR')
+
+    collection = client.get_collection('$COLLECTION_NAME')
+    existing_docs = collection.get(where={'git_project_name': '$project'}, include=['metadatas'], limit=10)
+
+    if existing_docs['ids']:
+        # Delete all chunks for this project
+        all_project_ids = []
+        batch_size = 1000
+        offset = 0
+
+        while True:
+            batch = collection.get(where={'git_project_name': '$project'}, include=['metadatas'], limit=batch_size, offset=offset)
+            if not batch['ids']: break
+            all_project_ids.extend(batch['ids'])
+            offset += batch_size
+            if len(batch['ids']) < batch_size: break
+
+        if all_project_ids:
+            for i in range(0, len(all_project_ids), 100):
+                batch_ids = all_project_ids[i:i+100]
+                collection.delete(ids=batch_ids)
+            print(f'Deleted {len(all_project_ids)} chunks from project $project')
+
+except Exception as e:
+    print(f'Error deleting project $project: {e}')
+"
+                done
+                echo "✅ Failed projects cleaned up. You can now retry with adjusted parameters."
+            fi
+        fi
+
+        rm -f "$RESULT_FILE"
+        exit 2  # Exit with error code for payload failures
+    fi
+
     rm -f "$RESULT_FILE"
 else
     success_count=0
     error_count=0
     no_text_count=0
+    payload_error_count=0
 fi
 
 # Remove any numeric issues
 success_count=$(echo "$success_count" | tr -d '\n' | tr -d ' ')
 error_count=$(echo "$error_count" | tr -d '\n' | tr -d ' ')  
 no_text_count=$(echo "$no_text_count" | tr -d '\n' | tr -d ' ')
+payload_error_count=$(echo "$payload_error_count" | tr -d '\n' | tr -d ' ')
 
 processed_files=$new_files_count
 
@@ -1489,7 +1934,10 @@ echo "Successfully uploaded: $success_count"
 if [ "$no_text_count" -gt 0 ]; then
     echo "No text extracted (image-only PDFs): $no_text_count"
 fi
-echo "Errors: $error_count"
+if [ "$payload_error_count" -gt 0 ]; then
+    echo "Payload too large errors: $payload_error_count"
+fi
+echo "Other errors: $error_count"
 echo "Full log saved to: $LOG_FILE"
 
 # Final collection stats

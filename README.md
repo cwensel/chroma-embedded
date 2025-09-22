@@ -209,6 +209,49 @@ This feature has been actively requested by the ChromaDB community. You can trac
 **Impact:**
 For large collections (thousands of documents), retrieving unique metadata values requires scanning all documents, which is the current best practice until native aggregation support is added to ChromaDB.
 
+## 🚨 Payload Size Error Handling
+
+When uploading large files (especially minified JavaScript or large source files), you may encounter "413 Payload Too Large" errors. The system now provides fail-fast error handling with clear recovery options:
+
+### Error Detection & Recovery
+```bash
+# If you get a payload error, the system will show:
+❌ PAYLOAD TOO LARGE ERROR
+📁 File: /path/to/aws-amplify.min.js
+📊 File size: 1,234,567 bytes
+🧩 Total chunks: 156
+💾 Batch payload: ~2,500,000 characters
+
+💡 RECOMMENDATIONS:
+   Suggested chunk size: 800 tokens
+   Suggested batch size: 25
+
+🔧 RECOVERY OPTIONS:
+   1. Reduce chunk size: --chunk-size 800 --batch-size 25
+   2. Delete partial project: --delete-project my-project
+```
+
+### Prevention & Optimization
+```bash
+# Preview chunk sizes before uploading (dry-run)
+./upload.sh --dry-run -i /path/to/source --store source-code
+
+# Upload with conservative settings for large files
+./upload.sh -i /path/to/source --store source-code --chunk-size 800 --batch-size 25
+
+# Auto-cleanup failed projects
+./upload.sh -i /path/to/source --store source-code --delete-failed-project
+```
+
+### Project Cleanup Commands
+```bash
+# Delete specific project from collection
+./upload.sh --delete-project my-project-name -c MyCollection
+
+# List available projects (shown when project not found)
+./upload.sh --delete-project nonexistent -c MyCollection
+```
+
 ## 📤 Multi-Format Upload Examples
 
 ### PDF Processing (Research Papers & Documents)
