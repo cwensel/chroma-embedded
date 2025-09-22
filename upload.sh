@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Script to upload only NEW PDFs from specified directory to ChromaDB
-# Supports both persistence (local) and remote ChromaDB clients
-# Works with both existing collections and creates new ones from scratch
+# Script to upload files to ChromaDB with store-specific optimizations
+# Supports PDFs (with OCR), source code (with AST chunking), and documentation
+# Works with both persistence (local) and remote ChromaDB clients
 # 
 # Usage: ./upload_new_pdfs.sh [OPTIONS]
 #
@@ -11,11 +11,12 @@
 #   -h, --host HOST            ChromaDB host for remote client (default: localhost)
 #   -p, --port PORT            ChromaDB port for remote client (default: 9000)
 #   -l, --limit NUMBER         Maximum number of files to upload (optional)
-#   -i, --input-path PATH      Path to recursively search for PDF files (required)"
+#   -i, --input-path PATH      Path to recursively search for files (required)"
 #   -d, --data-path PATH       Path for ChromaDB persistence data storage (forces persistence mode)
 #   -e, --embedding-model MODEL Embedding model (stella|modernbert|bge-large|default) [default: stella]
-#   --chunk-size TOKENS        Chunk size in tokens (default: 3000)
-#   --chunk-overlap TOKENS     Chunk overlap in tokens (default: 600, 20% of chunk-size)
+#   --store TYPE               Store type: pdf, source-code, documentation [default: pdf]
+#   --chunk-size TOKENS        Chunk size in tokens (default: 3000 for pdf, 2000 for source-code)
+#   --chunk-overlap TOKENS     Chunk overlap in tokens (default: 600 for pdf, 200 for source-code)
 #   --delete-collection        Delete and recreate the collection before upload
 #   --disable-ocr              Disable OCR for image PDFs (OCR enabled by default)
 #   --ocr-engine ENGINE        OCR engine: tesseract, easyocr (default: tesseract)
@@ -23,7 +24,7 @@
 #   --help                     Show this help message
 #
 # Path Types:
-#   --input-path: Directory containing PDF files to index (searched recursively)
+#   --input-path: Directory containing files to index (searched recursively by store type)
 #   --data-path:  Directory where ChromaDB stores its database files (persistence mode only)
 #
 # Client Selection:
@@ -31,7 +32,7 @@
 #   - Otherwise: uses HttpClient with --host and --port (default: localhost:9000)
 #
 # Environment variables:
-#   PDF_INPUT_PATH: Path to directory containing PDF files (alternative to -i option)
+#   PDF_INPUT_PATH: Path to directory containing files (alternative to -i option)
 #   CHROMA_DATA_PATH: Default path for persistence client data directory
 
 set -e
@@ -51,6 +52,8 @@ DELETE_COLLECTION="false"
 OCR_ENABLED="true"
 OCR_ENGINE="tesseract"
 OCR_LANGUAGE="eng"
+STORE_TYPE="pdf"
+GIT_DEPTH=""
 
 # Function to show help
 show_help() {
@@ -64,8 +67,10 @@ show_help() {
     echo "  -i, --input-path PATH      Path to recursively search for PDF files (required)"
     echo "  -d, --data-path PATH       Path for ChromaDB persistence data storage (forces persistence mode)"
     echo "  -e, --embedding-model MODEL Embedding model: stella, modernbert, bge-large, default [default: stella]"
-    echo "  --chunk-size TOKENS        Chunk size in tokens (default: 3000)"
-    echo "  --chunk-overlap TOKENS     Chunk overlap in tokens (default: 600, 20% of chunk-size)"
+    echo "  --store TYPE               Store type: pdf, source-code, documentation [default: pdf]"
+    echo "  --chunk-size TOKENS        Chunk size in tokens (default: 3000 for pdf, 2000 for source-code)"
+    echo "  --chunk-overlap TOKENS     Chunk overlap in tokens (default: 600 for pdf, 200 for source-code)"
+    echo "  --depth LEVELS             Git project search depth (1=direct subdirs only, default: unlimited)"
     echo "  --delete-collection        Delete and recreate the collection before upload"
     echo "  --disable-ocr              Disable OCR for image PDFs (OCR enabled by default)"
     echo "  --ocr-engine ENGINE        OCR engine: tesseract, easyocr (default: tesseract)"
@@ -91,12 +96,17 @@ show_help() {
     echo "  default     - SentenceTransformers default (all-MiniLM-L6-v2, 384 dims)"
     echo ""
     echo "Examples:"
-    echo "  $0 -i /path/to/pdfs -c MyCollection -l 10"
+    echo "  # Upload PDFs (default)"
     echo "  $0 -i /path/to/pdfs -c MyCollection -e stella"
-    echo "  $0 -i /path/to/pdfs -d /path/to/chroma/data -c MyCollection"
-    echo "  $0 -i /path/to/pdfs -h remote.host.com -p 9001 -c MyCollection"
-    echo "  $0 -i /path/to/pdfs --delete-collection -c MyCollection -e stella"
-    echo "  PDF_INPUT_PATH=/path/to/pdfs $0 -e modernbert --chunk-size 2000"
+    echo ""
+    echo "  # Upload source code with AST-aware chunking"
+    echo "  $0 -i /path/to/source --store source-code -c CodeLibrary -e stella"
+    echo ""
+    echo "  # Upload documentation files"
+    echo "  $0 -i /path/to/docs --store documentation -c DocsLibrary -e stella"
+    echo ""
+    echo "  # Advanced options"
+    echo "  $0 -i /path/to/files --store pdf --delete-collection -c MyCollection -e stella --chunk-size 2000"
 }
 
 # Parse command line arguments
@@ -131,6 +141,10 @@ while [[ $# -gt 0 ]]; do
             EMBEDDING_MODEL="$2"
             shift 2
             ;;
+        --store)
+            STORE_TYPE="$2"
+            shift 2
+            ;;
         --chunk-size)
             CHUNK_SIZE="$2"
             shift 2
@@ -153,6 +167,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --ocr-language)
             OCR_LANGUAGE="$2"
+            shift 2
+            ;;
+        --depth)
+            GIT_DEPTH="$2"
             shift 2
             ;;
         --help)
@@ -195,6 +213,198 @@ case "$OCR_ENGINE" in
         exit 1
         ;;
 esac
+
+# Validate depth parameter
+if [ -n "$GIT_DEPTH" ]; then
+    # Check if depth is a positive integer
+    if ! [[ "$GIT_DEPTH" =~ ^[0-9]+$ ]] || [ "$GIT_DEPTH" -lt 1 ]; then
+        echo "❌ Invalid depth value: $GIT_DEPTH"
+        echo "Depth must be a positive integer (1 or higher)"
+        echo "Use --help for more information"
+        exit 1
+    fi
+fi
+
+# Validate store type and adjust defaults
+case "$STORE_TYPE" in
+    pdf)
+        # PDF defaults are already set (3000 chunk size, 600 overlap)
+        ;;
+    source-code)
+        # Adjust defaults for source code if not explicitly set
+        if [ "$CHUNK_SIZE" = "3000" ]; then
+            CHUNK_SIZE="2000"
+        fi
+        if [ "$CHUNK_OVERLAP" = "600" ]; then
+            CHUNK_OVERLAP="200"
+        fi
+        # Disable OCR for source code by default
+        if [ "$OCR_ENABLED" = "true" ]; then
+            OCR_ENABLED="false"
+        fi
+        ;;
+    documentation)
+        # Adjust defaults for documentation if not explicitly set
+        if [ "$CHUNK_SIZE" = "3000" ]; then
+            CHUNK_SIZE="1200"
+        fi
+        if [ "$CHUNK_OVERLAP" = "600" ]; then
+            CHUNK_OVERLAP="200"
+        fi
+        # Disable OCR for documentation by default
+        if [ "$OCR_ENABLED" = "true" ]; then
+            OCR_ENABLED="false"
+        fi
+        ;;
+    *)
+        echo "❌ Invalid store type: $STORE_TYPE"
+        echo "Valid options: pdf, source-code, documentation"
+        echo "Use --help for more information"
+        exit 1
+        ;;
+esac
+
+# Function to get file extensions based on store type
+get_file_extensions() {
+    case "$STORE_TYPE" in
+        pdf)
+            echo "*.pdf"
+            ;;
+        source-code)
+            echo "*.py *.java *.js *.ts *.tsx *.jsx *.go *.rs *.cpp *.c *.cs *.php *.rb *.kt *.scala *.swift"
+            ;;
+        documentation)
+            echo "*.md *.txt *.rst *.adoc *.html *.xml"
+            ;;
+    esac
+}
+
+# Function to find git project roots in a directory
+find_git_projects() {
+    local input_path="$1"
+    local output_file="$2"
+    local depth="$3"  # Optional depth parameter
+
+    # Clear output file
+    > "$output_file"
+
+    # Build find command with optional maxdepth
+    local find_cmd="find \"$input_path\""
+
+    if [ -n "$depth" ]; then
+        # For depth=1, we want maxdepth=2 (input_path + 1 level down for .git directories)
+        local max_depth=$((depth + 1))
+        find_cmd="$find_cmd -maxdepth $max_depth"
+    fi
+
+    find_cmd="$find_cmd -name \".git\" -type d"
+
+    # Execute the find command and process results
+    eval "$find_cmd" | while read -r git_dir; do
+        project_root=$(dirname "$git_dir")
+        echo "$project_root" >> "$output_file"
+    done
+
+    # Remove duplicates and sort
+    if [ -f "$output_file" ]; then
+        sort -u "$output_file" -o "$output_file"
+    fi
+}
+
+# Function to get git metadata for a project
+get_git_metadata() {
+    local project_root="$1"
+    local metadata_file="$2"
+
+    if [ ! -d "$project_root/.git" ]; then
+        echo "ERROR: Not a git repository: $project_root" >&2
+        return 1
+    fi
+
+    cd "$project_root" || return 1
+
+    # Get git metadata
+    local commit_hash=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+    local remote_url=$(git remote get-url origin 2>/dev/null || echo "unknown")
+    local branch=$(git branch --show-current 2>/dev/null || echo "unknown")
+    local project_name=$(basename "$project_root")
+
+    # Write metadata to file
+    cat > "$metadata_file" << EOF
+GIT_PROJECT_ROOT="$project_root"
+GIT_COMMIT_HASH="$commit_hash"
+GIT_REMOTE_URL="$remote_url"
+GIT_BRANCH="$branch"
+GIT_PROJECT_NAME="$project_name"
+EOF
+
+    cd - > /dev/null
+    return 0
+}
+
+# Function to find files based on store type
+find_files() {
+    local input_path="$1"
+    local output_file="$2"
+    local extensions=$(get_file_extensions)
+
+    # Clear output file
+    > "$output_file"
+
+    if [ "$STORE_TYPE" = "source-code" ]; then
+        # For source code, use git-aware file discovery
+        local git_projects_file="/tmp/git_projects_$$.txt"
+        find_git_projects "$input_path" "$git_projects_file" "$GIT_DEPTH"
+
+        if [ -s "$git_projects_file" ]; then
+            # Process each git project
+            while IFS= read -r project_root; do
+                echo "  Found git project: $project_root"
+
+                # Get files from git ls-files (respects .gitignore)
+                cd "$project_root" || continue
+
+                # Use git ls-files and filter by extensions
+                for ext in $extensions; do
+                    # Convert shell glob to git pathspec pattern
+                    git_pattern=$(echo "$ext" | sed 's/\*//')  # Remove leading *
+                    git ls-files "*$git_pattern" 2>/dev/null >> "$output_file" || true
+                done
+
+                cd - > /dev/null
+            done < "$git_projects_file"
+
+            # Convert relative paths to absolute paths
+            local temp_file="/tmp/absolute_paths_$$.txt"
+            > "$temp_file"
+
+            while IFS= read -r relative_path; do
+                # Find which project this file belongs to
+                while IFS= read -r project_root; do
+                    if [ -f "$project_root/$relative_path" ]; then
+                        echo "$project_root/$relative_path" >> "$temp_file"
+                        break
+                    fi
+                done < "$git_projects_file"
+            done < "$output_file"
+
+            mv "$temp_file" "$output_file"
+        else
+            echo "  No git projects found, falling back to regular file search"
+            # Fall back to regular find for non-git directories
+            for ext in $extensions; do
+                find "$input_path" -name "$ext" -type f >> "$output_file" 2>/dev/null || true
+            done
+        fi
+
+        rm -f "$git_projects_file"
+    else
+        # For PDF and documentation, use regular find
+        for ext in $extensions; do
+            find "$input_path" -name "$ext" -type f >> "$output_file" 2>/dev/null || true
+        done
+    fi
+}
 
 # Validate that input path is provided
 if [ -z "$INPUT_PATH" ]; then
@@ -243,6 +453,13 @@ case "$EMBEDDING_MODEL" in
 esac
 echo "Chunk size: $CHUNK_SIZE tokens"
 echo "Chunk overlap: $CHUNK_OVERLAP tokens"
+if [ "$STORE_TYPE" = "source-code" ]; then
+    if [ -n "$GIT_DEPTH" ]; then
+        echo "Git project search depth: $GIT_DEPTH levels"
+    else
+        echo "Git project search depth: unlimited"
+    fi
+fi
 echo "OCR enabled: $OCR_ENABLED"
 if [ "$OCR_ENABLED" = "true" ]; then
     echo "  → OCR engine: $OCR_ENGINE"
@@ -396,6 +613,138 @@ except Exception as e:
     fi
 fi
 
+# Handle git project change detection for source-code
+if [ "$STORE_TYPE" = "source-code" ]; then
+    echo ""
+    echo "Checking for git project changes..."
+
+    # Find git projects in input path
+    GIT_PROJECTS_FILE="/tmp/git_projects_${COLLECTION_NAME}_$(date +%s).txt"
+    find_git_projects "$INPUT_PATH" "$GIT_PROJECTS_FILE" "$GIT_DEPTH"
+
+    if [ -s "$GIT_PROJECTS_FILE" ]; then
+        # Check each git project for changes
+        while IFS= read -r project_root; do
+            project_name=$(basename "$project_root")
+            echo "Checking git project: $project_name"
+
+            # Get current git metadata
+            GIT_METADATA_FILE="/tmp/git_metadata_${project_name}_$(date +%s).txt"
+            if get_git_metadata "$project_root" "$GIT_METADATA_FILE"; then
+                source "$GIT_METADATA_FILE"
+
+                # Check if project exists in ChromaDB and compare commit hash
+                python3 -c "
+import chromadb
+import sys
+
+try:
+    if '$CLIENT_TYPE' == 'remote':
+        client = chromadb.HttpClient(host='$CHROMA_HOST', port=$CHROMA_PORT)
+    else:
+        client = chromadb.PersistentClient(path='$CHROMA_DATA_DIR')
+
+    try:
+        collection = client.get_collection('$COLLECTION_NAME')
+
+        # Query for documents from this project
+        existing_docs = collection.get(
+            where={'git_project_root': '$GIT_PROJECT_ROOT'},
+            include=['metadatas'],
+            limit=10  # Just need to check a few to get the commit hash
+        )
+
+        if existing_docs['ids']:
+            stored_commit = existing_docs['metadatas'][0].get('git_commit_hash', 'unknown')
+            current_commit = '$GIT_COMMIT_HASH'
+
+            print(f'  Stored commit:  {stored_commit[:12] if stored_commit != \"unknown\" else \"unknown\"}')
+            print(f'  Current commit: {current_commit[:12]}')
+
+            if stored_commit != current_commit:
+                print('  🔄 Project has changed, deleting existing chunks...')
+
+                # Delete all chunks for this project
+                # Get all document IDs for this project in batches
+                all_project_ids = []
+                batch_size = 1000
+                offset = 0
+
+                while True:
+                    batch = collection.get(
+                        where={'git_project_root': '$GIT_PROJECT_ROOT'},
+                        include=['metadatas'],
+                        limit=batch_size,
+                        offset=offset
+                    )
+
+                    if not batch['ids']:
+                        break
+
+                    all_project_ids.extend(batch['ids'])
+                    offset += batch_size
+
+                    if len(batch['ids']) < batch_size:
+                        break
+
+                if all_project_ids:
+                    # Delete in batches (ChromaDB delete has limits)
+                    delete_batch_size = 100
+                    deleted_count = 0
+
+                    for i in range(0, len(all_project_ids), delete_batch_size):
+                        batch_ids = all_project_ids[i:i+delete_batch_size]
+                        collection.delete(ids=batch_ids)
+                        deleted_count += len(batch_ids)
+
+                    print(f'  ✅ Deleted {deleted_count} existing chunks')
+                    sys.exit(10)  # Signal that project was deleted
+                else:
+                    print('  ⚠️ No chunks found to delete')
+                    sys.exit(11)  # Signal no chunks to delete
+            else:
+                print('  ✓ Project unchanged, will check individual files')
+                sys.exit(0)  # Normal processing
+        else:
+            print('  📥 New project, will index all files')
+            sys.exit(0)  # Normal processing
+
+    except Exception as e:
+        if 'does not exist' in str(e):
+            print('  📥 Collection does not exist, will create and index all files')
+            sys.exit(0)
+        else:
+            print(f'Error querying collection: {e}')
+            sys.exit(1)
+
+except Exception as e:
+    print(f'Error connecting to ChromaDB: {e}')
+    sys.exit(1)
+"
+                check_result=$?
+
+                if [ $check_result -eq 10 ]; then
+                    echo "  Project $project_name was updated and old chunks deleted"
+                elif [ $check_result -eq 11 ]; then
+                    echo "  Project $project_name had no existing chunks"
+                elif [ $check_result -eq 0 ]; then
+                    echo "  Project $project_name processing normally"
+                else
+                    echo "  Error checking project $project_name"
+                fi
+
+                rm -f "$GIT_METADATA_FILE"
+            else
+                echo "  ⚠️ Could not get git metadata for $project_root"
+            fi
+        done < "$GIT_PROJECTS_FILE"
+
+        rm -f "$GIT_PROJECTS_FILE"
+    else
+        echo "No git projects found in input path"
+    fi
+fi
+
 # Query ChromaDB for existing files
 echo ""
 echo "Querying ChromaDB for existing files..."
@@ -505,17 +854,19 @@ fi
 # Analyze file differences
 echo ""
 echo "Analyzing file differences..."
-total_files=$(find "$INPUT_PATH" -name "*.pdf" | wc -l | tr -d ' ')
+# Count total files of the store type
+find_files "$INPUT_PATH" "/tmp/all_files_count_${COLLECTION_NAME}.txt"
+total_files=$(wc -l < "/tmp/all_files_count_${COLLECTION_NAME}.txt" | tr -d ' ')
 existing_count=$([ -f "$EXISTING_FILES_LIST" ] && wc -l < "$EXISTING_FILES_LIST" || echo "0")
 
-echo "Found $total_files total PDF files in input directory"
+echo "Found $total_files total files in input directory (store type: $STORE_TYPE)"
 echo "Found $existing_count files already in ChromaDB"
 
 # Find NEW files that aren't in ChromaDB
 NEW_FILES_LIST="/tmp/new_files_${COLLECTION_NAME}_$(date +%s).txt"
 if [ -f "$EXISTING_FILES_LIST" ] && [ -s "$EXISTING_FILES_LIST" ]; then
     # Use Python to find files in input directory but not in ChromaDB (more reliable than comm)
-    find "$INPUT_PATH" -name "*.pdf" > "/tmp/all_files_${COLLECTION_NAME}.txt"
+    find_files "$INPUT_PATH" "/tmp/all_files_${COLLECTION_NAME}.txt"
     
     python3 -c "
 # Read both files and find the difference using sets
@@ -534,7 +885,7 @@ with open('$NEW_FILES_LIST', 'w') as f:
     rm -f "/tmp/all_files_${COLLECTION_NAME}.txt"
 else
     # No existing files, so all files are new
-    find "$INPUT_PATH" -name "*.pdf" > "$NEW_FILES_LIST"
+    find_files "$INPUT_PATH" "$NEW_FILES_LIST"
 fi
 
 new_files_count=$(wc -l < "$NEW_FILES_LIST" | tr -d ' ')
@@ -595,27 +946,104 @@ try:
     ocr_enabled = sys.argv[10] if len(sys.argv) > 10 else 'true'
     ocr_engine = sys.argv[11] if len(sys.argv) > 11 else 'tesseract'
     ocr_language = sys.argv[12] if len(sys.argv) > 12 else 'eng'
+    store_type = sys.argv[13] if len(sys.argv) > 13 else 'pdf'
     filename = os.path.basename(pdf_path)
 
-    # Extract text with pymupdf
-    doc = fitz.open(pdf_path)
+    # Get git metadata for source-code files
+    git_metadata = {}
+    if store_type == 'source-code':
+        # Find the git project root for this file
+        current_dir = os.path.dirname(os.path.abspath(pdf_path))
+        git_root = None
+
+        # Walk up the directory tree to find .git
+        while current_dir != '/':
+            if os.path.exists(os.path.join(current_dir, '.git')):
+                git_root = current_dir
+                break
+            parent = os.path.dirname(current_dir)
+            if parent == current_dir:  # Reached root
+                break
+            current_dir = parent
+
+        if git_root:
+            try:
+                import subprocess
+                os.chdir(git_root)
+
+                # Get git metadata
+                commit_hash = subprocess.check_output(['git', 'rev-parse', 'HEAD'],
+                                                    stderr=subprocess.DEVNULL).decode().strip()
+
+                try:
+                    remote_url = subprocess.check_output(['git', 'remote', 'get-url', 'origin'],
+                                                       stderr=subprocess.DEVNULL).decode().strip()
+                except subprocess.CalledProcessError:
+                    remote_url = 'unknown'
+
+                try:
+                    branch = subprocess.check_output(['git', 'branch', '--show-current'],
+                                                   stderr=subprocess.DEVNULL).decode().strip()
+                except subprocess.CalledProcessError:
+                    branch = 'unknown'
+
+                git_metadata = {
+                    'git_project_root': git_root,
+                    'git_commit_hash': commit_hash,
+                    'git_remote_url': remote_url,
+                    'git_branch': branch,
+                    'git_project_name': os.path.basename(git_root)
+                }
+
+                print(f'Git project: {git_metadata["git_project_name"]} (commit: {commit_hash[:8]})')
+
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                print(f'Warning: Could not get git metadata for {pdf_path}')
+            finally:
+                # Change back to original directory
+                os.chdir(os.path.dirname(pdf_path))
+
+    # Extract text based on store type
     text = ''
+    extraction_method = 'unknown'
 
-    # Extract text from all pages
-    for page_num in range(len(doc)):
-        page = doc.load_page(page_num)
-        page_text = page.get_text()
-        if page_text.strip():
-            text += page_text + '\n'
+    if store_type == 'pdf':
+        # Extract text with pymupdf
+        doc = fitz.open(pdf_path)
 
-    doc.close()
+        # Extract text from all pages
+        for page_num in range(len(doc)):
+            page = doc.load_page(page_num)
+            page_text = page.get_text()
+            if page_text.strip():
+                text += page_text + '\n'
 
-    # OCR fallback for image PDFs
-    extraction_method = 'pymupdf'
+        doc.close()
+        extraction_method = 'pymupdf'
+
+    elif store_type in ['source-code', 'documentation']:
+        # Read text files directly
+        try:
+            with open(pdf_path, 'r', encoding='utf-8') as f:
+                text = f.read()
+            extraction_method = 'direct_read'
+        except UnicodeDecodeError:
+            try:
+                with open(pdf_path, 'r', encoding='latin-1') as f:
+                    text = f.read()
+                extraction_method = 'direct_read_latin1'
+            except Exception as e:
+                print(f'Error reading file {pdf_path}: {e}')
+                sys.exit(1)
+        except Exception as e:
+            print(f'Error reading file {pdf_path}: {e}')
+            sys.exit(1)
+
+    # OCR fallback for image PDFs (only applicable to PDF store type)
     ocr_confidence = None
     is_image_pdf = False
 
-    if not text.strip():
+    if store_type == 'pdf' and not text.strip():
         if ocr_enabled.lower() == 'true':
             print(f'No text found, attempting OCR with {ocr_engine} engine...')
             is_image_pdf = True
@@ -754,9 +1182,59 @@ try:
 
         return chunks
 
-    # Chunk the text
-    chunks = chunk_text(text, chunk_size, chunk_overlap)
-    print(f'Split into {len(chunks)} chunks (chunk_size={chunk_size}, overlap={chunk_overlap})')
+    # Chunk the text based on store type
+    if store_type == 'source-code':
+        # Use ASTChunk for source code
+        try:
+            from astchunk import ASTChunkBuilder
+
+            # Detect language based on file extension
+            file_ext = os.path.splitext(pdf_path)[1].lower()
+            language_map = {
+                '.py': 'python',
+                '.java': 'java',
+                '.js': 'typescript',  # ASTChunk uses typescript parser for JS
+                '.ts': 'typescript',
+                '.tsx': 'typescript',
+                '.jsx': 'typescript',
+                '.cs': 'csharp',
+                '.go': 'go',
+                '.rs': 'rust',
+                '.cpp': 'cpp',
+                '.c': 'c',
+                '.php': 'php',
+                '.rb': 'ruby'
+            }
+
+            language = language_map.get(file_ext, 'python')  # Default to python
+
+            # Configure ASTChunk
+            configs = {
+                'max_chunk_size': chunk_size * 4,  # Convert tokens to chars estimate
+                'language': language,
+                'metadata_template': 'default'
+            }
+            chunk_builder = ASTChunkBuilder(**configs)
+
+            # Use ASTChunk to chunk source code
+            chunks_data = chunk_builder.chunkify(text)
+            chunks = [chunk_item['content'] for chunk_item in chunks_data]
+            extraction_method = f'astchunk_{language}'
+            print(f'Split into {len(chunks)} AST-aware chunks for {language} code (max_size={chunk_size} tokens)')
+
+        except ImportError:
+            print('ASTChunk not available, falling back to basic chunking')
+            chunks = chunk_text(text, chunk_size, chunk_overlap)
+            print(f'Split into {len(chunks)} chunks (chunk_size={chunk_size}, overlap={chunk_overlap})')
+        except Exception as e:
+            print(f'ASTChunk failed ({e}), falling back to basic chunking')
+            chunks = chunk_text(text, chunk_size, chunk_overlap)
+            print(f'Split into {len(chunks)} chunks (chunk_size={chunk_size}, overlap={chunk_overlap})')
+
+    else:
+        # Use basic chunking for PDF and documentation
+        chunks = chunk_text(text, chunk_size, chunk_overlap)
+        print(f'Split into {len(chunks)} chunks (chunk_size={chunk_size}, overlap={chunk_overlap})')
     print(f'Using server-side embedding model: {embedding_model}')
 
     # Connect to ChromaDB using appropriate client
@@ -819,12 +1297,56 @@ try:
             'full_document': False,
             'is_chunked': True,
             'is_new_upload': True,
-            'is_image_pdf': is_image_pdf,
-            'ocr_enabled': ocr_enabled.lower() == 'true',
-            'ocr_engine': ocr_engine if is_image_pdf else None,
-            'ocr_language': ocr_language if is_image_pdf else None,
-            'ocr_confidence': ocr_confidence
+            'store_type': store_type,
         }
+
+        # Add store-specific metadata
+        if store_type == 'pdf':
+            chunk_metadata.update({
+                'is_image_pdf': is_image_pdf,
+                'ocr_enabled': ocr_enabled.lower() == 'true',
+                'ocr_engine': ocr_engine if is_image_pdf else None,
+                'ocr_language': ocr_language if is_image_pdf else None,
+                'ocr_confidence': ocr_confidence
+            })
+
+        elif store_type == 'source-code':
+            file_ext = os.path.splitext(pdf_path)[1].lower()
+            language_map = {
+                '.py': 'python', '.java': 'java', '.js': 'javascript',
+                '.ts': 'typescript', '.tsx': 'typescript', '.jsx': 'javascript',
+                '.cs': 'csharp', '.go': 'go', '.rs': 'rust',
+                '.cpp': 'cpp', '.c': 'c', '.php': 'php', '.rb': 'ruby',
+                '.kt': 'kotlin', '.scala': 'scala', '.swift': 'swift'
+            }
+
+            chunk_metadata.update({
+                'programming_language': language_map.get(file_ext, 'unknown'),
+                'file_extension': file_ext,
+                'ast_chunked': 'astchunk' in extraction_method if hasattr(locals(), 'extraction_method') else False,
+                'has_functions': 'def ' in chunk or 'function ' in chunk or 'public ' in chunk,
+                'has_classes': 'class ' in chunk or 'interface ' in chunk,
+                'has_imports': 'import ' in chunk or 'from ' in chunk or '#include' in chunk,
+                'line_count': len(chunk.split('\n')),
+            })
+
+            # Add git metadata for source-code files
+            if git_metadata:
+                chunk_metadata.update({
+                    'git_project_root': git_metadata['git_project_root'],
+                    'git_commit_hash': git_metadata['git_commit_hash'],
+                    'git_remote_url': git_metadata['git_remote_url'],
+                    'git_branch': git_metadata['git_branch'],
+                    'git_project_name': git_metadata['git_project_name']
+                })
+
+        elif store_type == 'documentation':
+            chunk_metadata.update({
+                'doc_type': 'markdown' if pdf_path.endswith('.md') else 'text',
+                'has_code_blocks': '```' in chunk or '    ' in chunk,  # Simple heuristic
+                'has_links': '[' in chunk and '](' in chunk,
+                'line_count': len(chunk.split('\n')),
+            })
         chunk_metadatas.append(chunk_metadata)
 
     # Add all chunks to collection in batch
@@ -844,7 +1366,7 @@ except Exception as e:
 EOF
 
     # Run the Python script (capture exit code properly)
-    python3 "$temp_script" "$pdf_file" "$collection_name" "$client_type" "$chroma_host" "$chroma_port" "$data_dir" "$CHUNK_SIZE" "$CHUNK_OVERLAP" "$EMBEDDING_MODEL" "$OCR_ENABLED" "$OCR_ENGINE" "$OCR_LANGUAGE" 2>&1 | tee -a "$log_file"
+    python3 "$temp_script" "$pdf_file" "$collection_name" "$client_type" "$chroma_host" "$chroma_port" "$data_dir" "$CHUNK_SIZE" "$CHUNK_OVERLAP" "$EMBEDDING_MODEL" "$OCR_ENABLED" "$OCR_ENGINE" "$OCR_LANGUAGE" "$STORE_TYPE" 2>&1 | tee -a "$log_file"
     local python_exit_code=${PIPESTATUS[0]}
     
     # Clean up temp file

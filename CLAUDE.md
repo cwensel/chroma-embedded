@@ -11,8 +11,10 @@ When working with Claude Code, use these exact commands:
 # 1. Update Dockerfile to include new model
 ./build.sh
 
-# 2. Test the model
-./upload.sh -e new-model-name -l 1 -c TestCollection --delete-collection
+# 2. Test the model with different store types
+./upload.sh --store pdf -e new-model-name -l 1 -c TestPDF --delete-collection
+./upload.sh --store source-code -e new-model-name -l 1 -c TestCode --delete-collection
+./upload.sh --store documentation -e new-model-name -l 1 -c TestDocs --delete-collection
 
 # 3. Run tests
 ./test.sh
@@ -106,11 +108,62 @@ Add to model comparison table:
 # Start server
 ./server.sh -m mpnet
 
-# Test upload
-./upload.sh -e mpnet -i /path/to/test/pdfs -l 1 -c TestModel --delete-collection
+# Test upload with different store types
+./upload.sh --store pdf -e mpnet -i /path/to/test/pdfs -l 1 -c TestModelPDF --delete-collection
+./upload.sh --store source-code -e mpnet -i /path/to/test/source -l 1 -c TestModelCode --delete-collection
+./upload.sh --store documentation -e mpnet -i /path/to/test/docs -l 1 -c TestModelDocs --delete-collection
 
-# Verify collection
-curl "http://localhost:9000/api/v2/collections/TestModel"
+# Verify collections
+curl "http://localhost:9000/api/v2/collections/TestModelPDF"
+curl "http://localhost:9000/api/v2/collections/TestModelCode"
+curl "http://localhost:9000/api/v2/collections/TestModelDocs"
+```
+
+## Git Project-Aware Source Code Processing
+
+### Quick Git Project Commands
+```bash
+# Index git projects with automatic change detection
+./upload.sh --store source-code -i /workspace -c DevCode -e stella
+
+# Only scan direct subdirectories for git projects (faster for organized workspaces)
+./upload.sh --store source-code -i /workspace --depth 1 -c MainProjects -e stella
+
+# Re-run same command - only processes projects with changed commits
+./upload.sh --store source-code -i /workspace -c DevCode -e stella
+
+# Test with specific project
+./upload.sh --store source-code -i /path/to/git/project -c TestProject --delete-collection -e stella
+```
+
+### Git Project Features
+- **Automatic Discovery**: Finds `.git` directories automatically
+- **Smart Updates**: Only re-processes projects when git commit changes
+- **Respects .gitignore**: Uses `git ls-files` to filter files
+- **Project Metadata**: Each chunk includes git project name, commit hash, remote URL
+- **Depth Control**: `--depth N` limits how deep to search for nested projects
+
+### Testing Git Features
+```bash
+# Test depth parameter
+./upload.sh --store source-code -i /workspace --depth 1 -c Depth1Test -e stella --delete-collection
+./upload.sh --store source-code -i /workspace --depth 2 -c Depth2Test -e stella --delete-collection
+./upload.sh --store source-code -i /workspace -c UnlimitedTest -e stella --delete-collection
+
+# Compare results
+python3 -c "
+import chromadb
+client = chromadb.HttpClient(host='localhost', port=9000)
+for collection_name in ['Depth1Test', 'Depth2Test', 'UnlimitedTest']:
+    collection = client.get_collection(collection_name)
+    print(f'{collection_name}: {collection.count()} documents')
+
+    # Show unique projects
+    docs = collection.get(include=['metadatas'], limit=100)
+    projects = set(m.get('git_project_name', 'unknown') for m in docs['metadatas'])
+    print(f'  Projects: {sorted(projects)}')
+    print()
+"
 ```
 
 ## Common Model Types
@@ -152,10 +205,17 @@ RUN python3 -c "from transformers import AutoModel; AutoModel.from_pretrained('m
 
 ## Model Recommendations
 
-| Use Case | Recommended Model | Dimensions | Speed |
-|----------|------------------|------------|--------|
-| Research papers | stella | 1024 | Medium |
-| General text | mpnet | 768 | Fast |
-| Latest tech | modernbert | 1024 | Medium |
-| Production | bge-large | 1024 | Fast |
-| Quick testing | default | 384 | Fastest |
+| Use Case | Recommended Model | Dimensions | Speed | Store Type |
+|----------|------------------|------------|--------|------------|
+| Research papers | stella | 1024 | Medium | pdf |
+| Source code projects | stella | 1024 | Medium | source-code |
+| API documentation | stella | 1024 | Medium | documentation |
+| General text | mpnet | 768 | Fast | pdf, documentation |
+| Latest tech docs | modernbert | 1024 | Medium | pdf, documentation |
+| Production workloads | bge-large | 1024 | Fast | all |
+| Quick testing | default | 384 | Fastest | all |
+
+### Git Project Scenarios
+- **Large codebases**: Use `stella` with `--depth 1` for main projects only
+- **Multi-language repos**: Use `stella` for best cross-language understanding
+- **Incremental updates**: Any model works - git change detection handles efficiency

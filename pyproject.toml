@@ -28,6 +28,7 @@ requires-python = ">=3.8"
 dependencies = [
     "chromadb>=1.1.0",
     "pymupdf>=1.26.0",
+    "astchunk>=0.1.0",
     "pytesseract>=0.3.10",
     "Pillow>=10.0.0",
     "packaging>=21.0"

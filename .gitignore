@@ -60,3 +60,5 @@ sentence_transformers_cache/
 # Docker
 *.dockerfile.bak
 docker-compose.override.yml
+
+.claude

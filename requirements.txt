@@ -4,6 +4,7 @@
 # Core dependencies
 chromadb>=1.1.0
 pymupdf>=1.26.0
+astchunk>=0.1.0
 
 # Optional: For advanced usage
 sentence-transformers>=5.1.0
