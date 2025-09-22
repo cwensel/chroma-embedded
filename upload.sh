@@ -1613,9 +1613,9 @@ try:
             chunk_metadata.update({
                 'is_image_pdf': is_image_pdf,
                 'ocr_enabled': ocr_enabled.lower() == 'true',
-                'ocr_engine': ocr_engine if is_image_pdf else None,
-                'ocr_language': ocr_language if is_image_pdf else None,
-                'ocr_confidence': ocr_confidence
+                'ocr_engine': ocr_engine if is_image_pdf else '',
+                'ocr_language': ocr_language if is_image_pdf else '',
+                'ocr_confidence': ocr_confidence if ocr_confidence is not None else 0.0
             })
 
         elif store_type == 'source-code':
