@@ -17,14 +17,14 @@ python3 check_deps.py
 # 4. Start server with Stella-400m embeddings
 ./server.sh -m stella
 
-# 5. Upload content with store-specific optimization
-# PDFs with OCR support
+# 5. Upload content with automatic model-optimized chunking
+# PDFs with OCR support (uses 460 tokens for Stella)
 ./upload.sh -i /path/to/pdfs --store pdf -e stella -c ResearchLibrary
 
-# Source code with AST-aware chunking
+# Source code with AST-aware chunking (uses 400 tokens for Stella)
 ./upload.sh -i /path/to/source --store source-code -e stella -c CodeLibrary
 
-# Documentation with optimized chunking
+# Documentation with optimized chunking (uses 430 tokens for Stella)
 ./upload.sh -i /path/to/docs --store documentation -e stella -c DocsLibrary
 ```
 
@@ -100,9 +100,23 @@ The upload script supports three optimized store types, each with tailored chunk
 
 | Store Type | Chunk Size | Overlap | Processing | Best For |
 |------------|------------|---------|------------|----------|
-| `pdf` | 3000 tokens | 600 tokens | OCR + Text extraction | Research papers, documents |
-| `source-code` | 2000 tokens | 200 tokens | AST-aware chunking | Code analysis, API understanding |
-| `documentation` | 1200 tokens | 200 tokens | Structure-aware chunking | README, wikis, tutorials |
+| `pdf` | **Auto-optimized** | **10% overlap** | OCR + Text extraction | Research papers, documents |
+| `source-code` | **Auto-optimized** | **10% overlap** | AST-aware chunking | Code analysis, API understanding |
+| `documentation` | **Auto-optimized** | **10% overlap** | Structure-aware chunking | README, wikis, tutorials |
+
+### 🧠 Model-Optimized Chunking (2024 Update)
+
+The system now automatically optimizes chunk sizes based on each embedding model's token limits:
+
+- **Stella**: 460 tokens/chunk (90% of 512 limit + 10% safety margin)
+- **ModernBERT**: 920 tokens/chunk (conservative limit with safety margin)
+- **BGE-Large**: 460 tokens/chunk (90% of 512 limit + 10% safety margin)
+- **Default**: 460 tokens/chunk (optimized for all-MiniLM-L6-v2)
+
+**Store-specific adjustments:**
+- Source code: -60 tokens (better AST parsing)
+- Documentation: -30 tokens (better semantic coherence)
+- PDF: Uses full model defaults
 
 ### 🔍 PDF Store Type
 - **OCR Support**: Automatic image-only PDF processing with Tesseract/EasyOCR
@@ -256,60 +270,49 @@ When uploading large files (especially minified JavaScript or large source files
 
 ### PDF Processing (Research Papers & Documents)
 ```bash
-# Basic PDF upload with OCR (default store type)
+# Basic PDF upload with OCR (auto-optimized: 460 tokens for Stella)
 ./upload.sh -i /path/to/pdfs --store pdf -e stella -c ResearchLibrary
 
-# OCR with EasyOCR engine (pure Python, no system deps)
-./upload.sh -i /path/to/pdfs --store pdf -e stella --ocr-engine easyocr
-
 # Multi-language OCR support
-./upload.sh -i /path/to/pdfs --store pdf -e stella --ocr-language fra  # French
-./upload.sh -i /path/to/pdfs --store pdf -e stella --ocr-engine easyocr --ocr-language es  # Spanish
+./upload.sh -i /path/to/pdfs --store pdf -e stella --ocr-language fra -c FrenchPapers
+./upload.sh -i /path/to/pdfs --store pdf -e stella --ocr-engine easyocr --ocr-language es -c SpanishPapers
 
 # Disable OCR for text-only PDFs (faster processing)
-./upload.sh -i /path/to/pdfs --store pdf -e stella --disable-ocr
+./upload.sh -i /path/to/pdfs --store pdf -e stella --disable-ocr -c TextOnlyPDFs
 ```
 
 ### Source Code Processing (API Understanding & Analysis)
 ```bash
-# Git project-aware source code chunking (auto-detects git projects)
+# Git project-aware source code chunking (auto-optimized: 400 tokens for Stella)
 ./upload.sh -i /path/to/source --store source-code -e stella -c CodeLibrary
 
-# Only scan direct subdirectories for git projects (useful for directories with many nested projects)
+# Only scan direct subdirectories for git projects
 ./upload.sh -i /workspace --store source-code -e stella -c MainProjects --depth 1
 
 # Process specific git project (detects changes via commit hash)
 ./upload.sh -i ./my-project --store source-code -e stella -c MyProject --delete-collection
-./upload.sh -i ./my-project --store source-code -e stella -c MyProject  # Re-run: only processes if git commit changed
+./upload.sh -i ./my-project --store source-code -e stella -c MyProject  # Re-run: only processes if changed
 
 # Multi-project workspace processing
-./upload.sh -i /workspace --store source-code -e stella -c AllProjects  # Finds all git projects
-./upload.sh -i /workspace --store source-code -e stella -c AllProjects --depth 2  # Limit search depth
+./upload.sh -i /workspace --store source-code -e stella -c AllProjects
+./upload.sh -i /workspace --store source-code -e stella -c AllProjects --depth 2
 
-# Language-specific git projects
+# Language-specific collections
 ./upload.sh -i ./python_project --store source-code -e stella -c PythonCode
 ./upload.sh -i ./java_project --store source-code -e stella -c JavaCode
-./upload.sh -i ./typescript_project --store source-code -e stella -c TSCode
 
-# Custom chunking for larger codebases
-./upload.sh -i /path/to/source --store source-code -e stella --chunk-size 3000
-
-# Mixed git projects and regular files (git projects get special handling)
-./upload.sh -i /mixed/directory --store source-code -e stella -c MixedCode
+# Custom chunking only if needed (overrides auto-optimization)
+./upload.sh -i /path/to/source --store source-code -e stella --chunk-size 300 -c SmallChunks
 ```
 
 ### Documentation Processing (README, Wikis, Tutorials)
 ```bash
-# Optimized documentation processing
+# Optimized documentation processing (auto-optimized: 430 tokens for Stella)
 ./upload.sh -i /path/to/docs --store documentation -e stella -c DocsLibrary
 
 # Process specific documentation types
 ./upload.sh -i ./wiki --store documentation -e stella -c ProjectWiki
 ./upload.sh -i ./tutorials --store documentation -e stella -c Tutorials
-
-# Mixed documentation sources
-./upload.sh -i ./README.md --store documentation -e stella -c ProjectDocs
-./upload.sh -i ./docs --store documentation -e stella -c ProjectDocs  # Append
 ```
 
 ### Advanced Multi-Format Workflows
@@ -327,15 +330,11 @@ When uploading large files (especially minified JavaScript or large source files
 ./upload.sh -i ./my-project --store source-code -e stella -c MyProject --delete-collection
 ./upload.sh -i ./my-project/docs --store documentation -e stella -c MyProjectDocs --delete-collection
 
-# Custom chunking strategies
-./upload.sh -i /path/to/files --store pdf --chunk-size 2000 --chunk-overlap 300
-./upload.sh -i /path/to/source --store source-code --chunk-size 2500 --chunk-overlap 100
+# Custom chunking only when needed (overrides auto-optimization)
+./upload.sh -i /path/to/files --store pdf --chunk-size 300 --chunk-overlap 30 -c SmallChunks
 
 # Remote server deployment
 ./upload.sh -i /path/to/files --store pdf -h production-server.com -p 8000 -e modernbert
-
-# Batch processing with limits
-./upload.sh -i /large/dataset --store pdf -e stella -l 50 -c BatchUpload
 
 # Incremental git project updates (only re-processes changed projects)
 ./upload.sh -i /workspace --store source-code -e stella -c DevEnvironment  # Daily runs
@@ -584,8 +583,7 @@ export HF_HOME=/models                   # Hugging Face cache directory
 
 # Store-specific defaults (optional)
 export DEFAULT_STORE_TYPE=pdf            # Default store type
-export DEFAULT_CHUNK_SIZE=3000           # Default chunk size (adjusted per store type)
-export DEFAULT_OVERLAP=600               # Default overlap (adjusted per store type)
+# Note: Chunk sizes are now auto-optimized per embedding model
 ```
 
 ## 🔍 Troubleshooting
@@ -688,10 +686,11 @@ print(f'✅ ASTChunk test successful: {len(result)} chunks')
    - **BGE-Large**: Production-ready, reliable for all content types
 
 ### Processing Optimization
-4. **Chunking Strategies**:
-   - Keep default chunk sizes unless you have specific requirements
+4. **Model-Optimized Chunking** (2024 Update):
+   - Use default auto-optimization for best results (no --chunk-size needed)
+   - System automatically respects each model's token limits with safety margins
    - Source code benefits from AST-aware chunking (automatic with ASTChunk)
-   - Use `--delete-collection` when changing embedding models
+   - Only override chunking for special requirements (e.g., very small chunks)
 
 5. **Resource Management**:
    - Ensure Docker has 8GB+ RAM for optimal performance

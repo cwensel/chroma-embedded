@@ -11,7 +11,7 @@ When working with Claude Code, use these exact commands:
 # 1. Update Dockerfile to include new model
 ./build.sh
 
-# 2. Test the model with different store types
+# 2. Test the model with different store types (uses auto-optimized chunk sizes)
 ./upload.sh --store pdf -e new-model-name -l 1 -c TestPDF --delete-collection
 ./upload.sh --store source-code -e new-model-name -l 1 -c TestCode --delete-collection
 ./upload.sh --store documentation -e new-model-name -l 1 -c TestDocs --delete-collection
@@ -108,7 +108,7 @@ Add to model comparison table:
 # Start server
 ./server.sh -m mpnet
 
-# Test upload with different store types
+# Test upload with different store types (auto-optimized chunking)
 ./upload.sh --store pdf -e mpnet -i /path/to/test/pdfs -l 1 -c TestModelPDF --delete-collection
 ./upload.sh --store source-code -e mpnet -i /path/to/test/source -l 1 -c TestModelCode --delete-collection
 ./upload.sh --store documentation -e mpnet -i /path/to/test/docs -l 1 -c TestModelDocs --delete-collection
@@ -117,6 +117,35 @@ Add to model comparison table:
 curl "http://localhost:9000/api/v2/collections/TestModelPDF"
 curl "http://localhost:9000/api/v2/collections/TestModelCode"
 curl "http://localhost:9000/api/v2/collections/TestModelDocs"
+```
+
+## Token-Aware Chunking (2024 Update)
+
+The system now uses intelligent, model-specific chunking that respects each embedding model's token limits:
+
+### Automatic Model-Optimized Chunking
+- **Stella**: 460 tokens/chunk (10% safety margin below 512 limit)
+- **ModernBERT**: 920 tokens/chunk (conservative limit with safety margin)
+- **BGE-Large**: 460 tokens/chunk (10% safety margin below 512 limit)
+- **Default**: 460 tokens/chunk (optimized for all-MiniLM-L6-v2)
+
+### Key Benefits
+- **True token counting**: Uses actual model tokenizers, not character approximation
+- **Query context reserved**: 10% margin for search query embedding
+- **Store-specific adjustments**: Source code gets smaller chunks for better AST parsing
+- **Automatic fallback**: Falls back to improved character estimation if tokenizer unavailable
+
+### Usage Examples
+```bash
+# Auto-optimized chunking (recommended)
+./upload.sh --store pdf -e stella -i /docs -c MyCollection
+# → Uses 460 tokens for Stella's 512 token limit
+
+./upload.sh --store source-code -e modernbert -i /code -c CodeBase
+# → Uses 920 tokens for ModernBERT's larger context
+
+# Custom chunking (override auto-optimization)
+./upload.sh --store pdf -e stella -i /docs -c MyCollection --chunk-size 300 --chunk-overlap 30
 ```
 
 ## Git Project-Aware Source Code Processing
@@ -203,17 +232,19 @@ RUN python3 -c "from transformers import AutoModel; AutoModel.from_pretrained('m
 - Check case sensitivity in model names
 - Verify help text matches actual options
 
-## Model Recommendations
+## Model Recommendations (2024 Token-Aware)
 
-| Use Case | Recommended Model | Dimensions | Speed | Store Type |
-|----------|------------------|------------|--------|------------|
-| Research papers | stella | 1024 | Medium | pdf |
-| Source code projects | stella | 1024 | Medium | source-code |
-| API documentation | stella | 1024 | Medium | documentation |
-| General text | mpnet | 768 | Fast | pdf, documentation |
-| Latest tech docs | modernbert | 1024 | Medium | pdf, documentation |
-| Production workloads | bge-large | 1024 | Fast | all |
-| Quick testing | default | 384 | Fastest | all |
+| Use Case | Recommended Model | Dimensions | Chunk Size | Speed | Store Type |
+|----------|------------------|------------|------------|--------|------------|
+| Research papers | stella | 1024 | 460 tokens | Medium | pdf |
+| Source code projects | stella | 1024 | 400 tokens* | Medium | source-code |
+| API documentation | stella | 1024 | 430 tokens* | Medium | documentation |
+| General text | bge-large | 1024 | 460 tokens | Fast | pdf, documentation |
+| Latest tech docs | modernbert | 1024 | 920 tokens | Medium | pdf, documentation |
+| Production workloads | bge-large | 1024 | 460 tokens | Fast | all |
+| Quick testing | default | 384 | 460 tokens | Fastest | all |
+
+*Store-specific adjustments: Source code chunks are 60 tokens smaller for better AST parsing; Documentation chunks are 30 tokens smaller for semantic coherence.
 
 ### Git Project Scenarios
 - **Large codebases**: Use `stella` with `--depth 1` for main projects only

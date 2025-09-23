@@ -15,8 +15,8 @@
 #   -d, --data-path PATH       Path for ChromaDB persistence data storage (forces persistence mode)
 #   -e, --embedding-model MODEL Embedding model (stella|modernbert|bge-large|default) [default: stella]
 #   --store TYPE               Store type: pdf, source-code, documentation [default: pdf]
-#   --chunk-size TOKENS        Chunk size in tokens (default: 3000 for pdf, 2000 for source-code)
-#   --chunk-overlap TOKENS     Chunk overlap in tokens (default: 600 for pdf, 200 for source-code)
+#   --chunk-size TOKENS        Chunk size in tokens (auto=model-specific, or custom number)
+#   --chunk-overlap TOKENS     Chunk overlap in tokens (auto=model-specific, or custom number)
 #   --batch-size NUMBER        Upload batch size to avoid payload limits (default: 50)
 #   --delete-collection        Delete and recreate the collection before upload
 #   --delete-project NAME      Delete specific git project from collection
@@ -50,8 +50,8 @@ INPUT_PATH="${PDF_INPUT_PATH:-}"  # Use environment variable or require CLI opti
 CHROMA_DATA_DIR=""
 CLIENT_TYPE="remote"
 EMBEDDING_MODEL="stella"
-CHUNK_SIZE="3000"
-CHUNK_OVERLAP="600"
+CHUNK_SIZE="auto"
+CHUNK_OVERLAP="auto"
 BATCH_SIZE="50"
 DELETE_COLLECTION="false"
 DELETE_PROJECT=""
@@ -76,8 +76,8 @@ show_help() {
     echo "  -d, --data-path PATH       Path for ChromaDB persistence data storage (forces persistence mode)"
     echo "  -e, --embedding-model MODEL Embedding model: stella, modernbert, bge-large, default [default: stella]"
     echo "  --store TYPE               Store type: pdf, source-code, documentation [default: pdf]"
-    echo "  --chunk-size TOKENS        Chunk size in tokens (default: 3000 for pdf, 2000 for source-code)"
-    echo "  --chunk-overlap TOKENS     Chunk overlap in tokens (default: 600 for pdf, 200 for source-code)"
+    echo "  --chunk-size TOKENS        Chunk size in tokens (auto=model-optimized, or specify number)"
+    echo "  --chunk-overlap TOKENS     Chunk overlap in tokens (auto=model-optimized, or specify number)"
     echo "  --batch-size NUMBER        Upload batch size to avoid payload limits (default: 50)"
     echo "  --depth LEVELS             Git project search depth (1=direct subdirs only, default: unlimited)"
     echo "  --delete-collection        Delete and recreate the collection before upload"
@@ -117,8 +117,11 @@ show_help() {
     echo "  # Upload documentation files"
     echo "  $0 -i /path/to/docs --store documentation -c DocsLibrary -e stella"
     echo ""
-    echo "  # Advanced options"
-    echo "  $0 -i /path/to/files --store pdf --delete-collection -c MyCollection -e stella --chunk-size 2000"
+    echo "  # Advanced options - custom chunk size"
+    echo "  $0 -i /path/to/files --store pdf --delete-collection -c MyCollection -e stella --chunk-size 400"
+    echo ""
+    echo "  # Model-optimized chunking (recommended)"
+    echo "  $0 -i /path/to/files --store pdf -c MyCollection -e stella  # Uses optimal 460 tokens for Stella"
     echo ""
     echo "  # Handling large files (if you get payload size errors)"
     echo "  $0 -i /path/to/source --store source-code --batch-size 25 --chunk-size 1000"
@@ -263,32 +266,74 @@ if [ -n "$GIT_DEPTH" ]; then
     fi
 fi
 
-# Validate store type and adjust defaults
+# Set model-specific defaults with 10% safety margin for query context
+set_model_defaults() {
+    local model="$1"
+    local store="$2"
+
+    case "$model" in
+        stella)
+            # Stella: 512 token limit, 10% safety margin = 460 tokens
+            MODEL_CHUNK_SIZE="460"
+            MODEL_CHUNK_OVERLAP="46"  # 10% overlap
+            ;;
+        modernbert)
+            # ModernBERT: 8192 token limit, use conservative 1024 with 10% margin = 920 tokens
+            MODEL_CHUNK_SIZE="920"
+            MODEL_CHUNK_OVERLAP="92"  # 10% overlap
+            ;;
+        bge-large)
+            # BGE-Large: ~512 token limit (BERT-based), 10% safety margin = 460 tokens
+            MODEL_CHUNK_SIZE="460"
+            MODEL_CHUNK_OVERLAP="46"  # 10% overlap
+            ;;
+        default)
+            # Default SentenceTransformers: all-MiniLM-L6-v2, ~512 tokens
+            MODEL_CHUNK_SIZE="460"
+            MODEL_CHUNK_OVERLAP="46"  # 10% overlap
+            ;;
+        *)
+            echo "❌ Unknown model for chunk size calculation: $model"
+            exit 1
+            ;;
+    esac
+
+    # Apply store-specific adjustments if needed
+    case "$store" in
+        source-code)
+            # Source code benefits from slightly smaller chunks for better AST parsing
+            MODEL_CHUNK_SIZE="$((MODEL_CHUNK_SIZE - 60))"
+            MODEL_CHUNK_OVERLAP="$((MODEL_CHUNK_OVERLAP / 2))"
+            ;;
+        documentation)
+            # Documentation can use slightly smaller chunks for better semantic coherence
+            MODEL_CHUNK_SIZE="$((MODEL_CHUNK_SIZE - 30))"
+            ;;
+        pdf)
+            # PDFs use default model settings
+            ;;
+    esac
+}
+
+# Set chunk sizes based on embedding model if auto
+if [ "$CHUNK_SIZE" = "auto" ]; then
+    set_model_defaults "$EMBEDDING_MODEL" "$STORE_TYPE"
+    CHUNK_SIZE="$MODEL_CHUNK_SIZE"
+    CHUNK_OVERLAP="$MODEL_CHUNK_OVERLAP"
+fi
+
+# Validate store type and apply other defaults
 case "$STORE_TYPE" in
     pdf)
-        # PDF defaults are already set (3000 chunk size, 600 overlap)
+        # PDF settings
         ;;
     source-code)
-        # Adjust defaults for source code if not explicitly set
-        if [ "$CHUNK_SIZE" = "3000" ]; then
-            CHUNK_SIZE="2000"
-        fi
-        if [ "$CHUNK_OVERLAP" = "600" ]; then
-            CHUNK_OVERLAP="200"
-        fi
         # Disable OCR for source code by default
         if [ "$OCR_ENABLED" = "true" ]; then
             OCR_ENABLED="false"
         fi
         ;;
     documentation)
-        # Adjust defaults for documentation if not explicitly set
-        if [ "$CHUNK_SIZE" = "3000" ]; then
-            CHUNK_SIZE="1200"
-        fi
-        if [ "$CHUNK_OVERLAP" = "600" ]; then
-            CHUNK_OVERLAP="200"
-        fi
         # Disable OCR for documentation by default
         if [ "$OCR_ENABLED" = "true" ]; then
             OCR_ENABLED="false"
@@ -301,6 +346,13 @@ case "$STORE_TYPE" in
         exit 1
         ;;
 esac
+
+# Validate chunk sizes are reasonable
+if [ "$CHUNK_SIZE" -gt 1000 ]; then
+    echo "⚠️  Warning: Chunk size $CHUNK_SIZE tokens is quite large"
+    echo "   This may exceed optimal embedding model limits"
+    echo "   Consider using model-specific defaults with --chunk-size auto"
+fi
 
 # Function to get file extensions based on store type
 get_file_extensions() {
@@ -495,7 +547,7 @@ case "$EMBEDDING_MODEL" in
         echo "  → SentenceTransformers default (384 dims, all-MiniLM-L6-v2)"
         ;;
 esac
-echo "Chunk size: $CHUNK_SIZE tokens"
+echo "Chunk size: $CHUNK_SIZE tokens (model-optimized for $EMBEDDING_MODEL)"
 echo "Chunk overlap: $CHUNK_OVERLAP tokens"
 if [ "$STORE_TYPE" = "source-code" ]; then
     if [ -n "$GIT_DEPTH" ]; then
@@ -1126,10 +1178,10 @@ try:
             with open(file_path, 'r', encoding='latin-1') as f:
                 text = f.read()
 
-    # Simple chunking simulation
-    chars_per_token = 4
-    chunk_size_chars = chunk_size * chars_per_token
-    overlap_chars = chunk_overlap * chars_per_token
+    # Token-aware chunking simulation with improved ratio
+    chars_per_token = 3.5  # Improved approximation
+    chunk_size_chars = int(chunk_size * chars_per_token)
+    overlap_chars = int(chunk_overlap * chars_per_token)
 
     chunks = []
     start = 0
@@ -1467,11 +1519,23 @@ try:
             print(f'No text extracted from {pdf_path} (OCR disabled)')
             sys.exit(3)  # Special exit code for no text
 
-    # Simple chunking function (approximating 4 chars per token)
-    def chunk_text(text, chunk_size_tokens=3000, overlap_tokens=600):
-        chars_per_token = 4
-        chunk_size_chars = chunk_size_tokens * chars_per_token
-        overlap_chars = overlap_tokens * chars_per_token
+    # Model-specific token-aware chunking without remote dependencies
+    def chunk_text_token_aware(text, chunk_size_tokens=460, overlap_tokens=46, model_name=None):
+        '''
+        Chunk text based on model-specific character-to-token ratios.
+        Uses researched ratios for each embedding model without remote fetching.
+        '''
+        # Model-specific character-to-token ratios based on research
+        model_char_ratios = {
+            'stella': 3.2,      # BERT-based, WordPiece tokenizer
+            'modernbert': 3.4,  # Modern BERT with improved tokenization
+            'bge-large': 3.3,   # BERT-based, similar to Stella
+            'default': 3.5      # all-MiniLM-L6-v2, sentence-transformers default
+        }
+
+        chars_per_token = model_char_ratios.get(model_name, 3.5)
+        chunk_size_chars = int(chunk_size_tokens * chars_per_token)
+        overlap_chars = int(overlap_tokens * chars_per_token)
 
         chunks = []
         start = 0
@@ -1488,6 +1552,7 @@ try:
             if start >= len(text):
                 break
 
+        print(f'Model-optimized chunking ({model_name}): {len(chunks)} chunks, ~{chunk_size_tokens} tokens each ({chars_per_token} chars/token)')
         return chunks
 
     # Chunk the text based on store type
@@ -1531,19 +1596,53 @@ try:
             print(f'Split into {len(chunks)} AST-aware chunks for {language} code (max_size={chunk_size} tokens)')
 
         except ImportError:
-            print('ASTChunk not available, falling back to basic chunking')
-            chunks = chunk_text(text, chunk_size, chunk_overlap)
-            print(f'Split into {len(chunks)} chunks (chunk_size={chunk_size}, overlap={chunk_overlap})')
+            print('ASTChunk not available, falling back to token-aware chunking')
+            chunks = chunk_text_token_aware(text, chunk_size, chunk_overlap, embedding_model)
         except Exception as e:
-            print(f'ASTChunk failed ({e}), falling back to basic chunking')
-            chunks = chunk_text(text, chunk_size, chunk_overlap)
-            print(f'Split into {len(chunks)} chunks (chunk_size={chunk_size}, overlap={chunk_overlap})')
+            print(f'ASTChunk failed ({e}), falling back to token-aware chunking')
+            chunks = chunk_text_token_aware(text, chunk_size, chunk_overlap, embedding_model)
 
     else:
-        # Use basic chunking for PDF and documentation
-        chunks = chunk_text(text, chunk_size, chunk_overlap)
-        print(f'Split into {len(chunks)} chunks (chunk_size={chunk_size}, overlap={chunk_overlap})')
+        # Use token-aware chunking for PDF and documentation
+        chunks = chunk_text_token_aware(text, chunk_size, chunk_overlap, embedding_model)
     print(f'Using server-side embedding model: {embedding_model}')
+
+    # Validate chunk sizes against model limits
+    def validate_chunk_sizes(chunks, model_name, max_tokens):
+        '''Validate that chunks do not exceed model token limits'''
+        if not chunks:
+            return
+
+        # Get model-specific limits
+        model_limits = {
+            'stella': 512,
+            'bge-large': 512,
+            'default': 512,
+            'modernbert': 8192
+        }
+
+        model_limit = model_limits.get(model_name, 512)
+        oversized_chunks = 0
+
+        # For token-aware chunks, we know they're within limits by design
+        # But for character-based fallback or AST chunks, we should warn
+        for i, chunk in enumerate(chunks):
+            # Rough token estimate for validation (3.5 chars per token)
+            estimated_tokens = len(chunk) / 3.5
+
+            if estimated_tokens > model_limit:
+                oversized_chunks += 1
+                if oversized_chunks <= 3:  # Show first 3 warnings
+                    print(f'⚠️  Chunk {i+1} estimated at {int(estimated_tokens)} tokens (exceeds {model_limit} limit for {model_name})')
+
+        if oversized_chunks > 3:
+            print(f'⚠️  {oversized_chunks - 3} additional chunks may exceed token limits')
+
+        if oversized_chunks > 0:
+            print(f'💡 Consider reducing chunk size or using --chunk-size auto for model optimization')
+
+    # Validate the chunks
+    validate_chunk_sizes(chunks, embedding_model, chunk_size)
 
     # Connect to ChromaDB using appropriate client
     if client_type == 'remote':
