@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Script to upload files to ChromaDB with store-specific optimizations
 # Supports PDFs (with OCR), source code (with AST chunking), and documentation
@@ -1881,28 +1881,6 @@ RESULT_FILE="/tmp/upload_results_$(date +%s)_$$.txt"
 # Clean up any old result files
 rm -f /tmp/upload_results_*.txt
 
-# Create a wrapper script for each file
-WRAPPER_SCRIPT="/tmp/process_wrapper_$$.sh"
-cat > "$WRAPPER_SCRIPT" << 'WRAPPER_EOF'
-#!/bin/bash
-line_number="$1"
-pdf_file="$2"
-collection_name="$3" 
-chroma_host="$4"
-chroma_port="$5"
-log_file="$6"
-result_file="$7"
-total_files="$8"
-
-source_script_dir="$(dirname "$0")"
-source "$source_script_dir/upload_new_pdfs.sh"
-
-process_pdf_file "$pdf_file" "$line_number" "$total_files" "$collection_name" "$chroma_host" "$chroma_port" "$log_file"
-echo $? >> "$result_file"
-WRAPPER_EOF
-
-chmod +x "$WRAPPER_SCRIPT"
-
 # Process files in parallel using background processes
 pids=()
 line_number=1
@@ -1913,7 +1891,7 @@ while IFS= read -r pdf_file; do
         wait -n  # Wait for next process to complete
 
         # Clean up completed processes from pids array
-        local new_pids=()
+        new_pids=()
         for pid in "${pids[@]}"; do
             if kill -0 "$pid" 2>/dev/null; then
                 new_pids+=("$pid")
@@ -1938,9 +1916,6 @@ for pid in "${pids[@]}"; do
         wait "$pid"
     fi
 done
-
-# Clean up wrapper script
-rm -f "$WRAPPER_SCRIPT"
 
 # Count results
 if [ -f "$RESULT_FILE" ]; then
