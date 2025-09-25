@@ -1583,17 +1583,19 @@ try:
 
             # Configure ASTChunk
             configs = {
-                'max_chunk_size': chunk_size * 4,  # Convert tokens to chars estimate
+                'max_chunk_size': int(chunk_size * 3.2 * 0.50),  # Very conservative char estimate: tokens * chars_per_token * safety_buffer
                 'language': language,
-                'metadata_template': 'default'
+                'metadata_template': 'default',
+                'chunk_overlap': 0,  # Disable overlap to prevent size inflation
+                'chunk_expansion': False  # Avoid token-consuming metadata headers
             }
             chunk_builder = ASTChunkBuilder(**configs)
 
             # Use ASTChunk to chunk source code
-            chunks_data = chunk_builder.chunkify(text)
+            chunks_data = chunk_builder.chunkify(text, **configs)
             chunks = [chunk_item['content'] for chunk_item in chunks_data]
             extraction_method = f'astchunk_{language}'
-            print(f'Split into {len(chunks)} AST-aware chunks for {language} code (max_size={chunk_size} tokens)')
+            print(f'Split into {len(chunks)} AST-aware chunks for {language} code (max_size={chunk_size} tokens, ~{int(chunk_size * 3.2 * 0.50)} chars)')
 
         except ImportError:
             print('ASTChunk not available, falling back to token-aware chunking')
@@ -1907,28 +1909,34 @@ line_number=1
 while IFS= read -r pdf_file; do
     # Wait if we have reached the maximum number of parallel jobs
     while [ ${#pids[@]} -ge $MAX_PARALLEL_JOBS ]; do
-        for i in "${!pids[@]}"; do
-            if ! kill -0 ${pids[i]} 2>/dev/null; then
-                unset pids[i]
+        # Wait for any process to complete instead of polling
+        wait -n  # Wait for next process to complete
+
+        # Clean up completed processes from pids array
+        local new_pids=()
+        for pid in "${pids[@]}"; do
+            if kill -0 "$pid" 2>/dev/null; then
+                new_pids+=("$pid")
             fi
         done
-        pids=("${pids[@]}")  # Reindex array
-        sleep 0.1
+        pids=("${new_pids[@]}")
     done
-    
+
     # Start background process
     (
         process_pdf_file "$pdf_file" "$line_number" "$new_files_count" "$COLLECTION_NAME" "$CHROMA_HOST" "$CHROMA_PORT" "$LOG_FILE" "$CLIENT_TYPE" "$CHROMA_DATA_DIR"
         echo $? >> "$RESULT_FILE"
     ) &
     pids+=($!)
-    
+
     ((line_number++))
 done < "$NEW_FILES_LIST"
 
-# Wait for all background processes to complete
+# Wait for all remaining background processes to complete
 for pid in "${pids[@]}"; do
-    wait $pid
+    if kill -0 "$pid" 2>/dev/null; then
+        wait "$pid"
+    fi
 done
 
 # Clean up wrapper script
@@ -1941,8 +1949,14 @@ if [ -f "$RESULT_FILE" ]; then
     no_text_count=$(grep -c "^3$" "$RESULT_FILE" 2>/dev/null || echo "0")
     payload_error_count=$(grep -c "^4$" "$RESULT_FILE" 2>/dev/null || echo "0")
 
+    # Clean variables immediately after assignment
+    success_count=${success_count//[^0-9]/}
+    error_count=${error_count//[^0-9]/}
+    no_text_count=${no_text_count//[^0-9]/}
+    payload_error_count=${payload_error_count//[^0-9]/}
+
     # Handle payload errors - if any files failed due to size, stop here
-    if [ "$payload_error_count" -gt 0 ]; then
+    if [ "${payload_error_count:-0}" -gt 0 ]; then
         echo ""
         echo "💥 UPLOAD STOPPED: $payload_error_count file(s) failed due to payload size limits"
         echo ""
@@ -2015,11 +2029,11 @@ else
     payload_error_count=0
 fi
 
-# Remove any numeric issues
-success_count=$(echo "$success_count" | tr -d '\n' | tr -d ' ')
-error_count=$(echo "$error_count" | tr -d '\n' | tr -d ' ')  
-no_text_count=$(echo "$no_text_count" | tr -d '\n' | tr -d ' ')
-payload_error_count=$(echo "$payload_error_count" | tr -d '\n' | tr -d ' ')
+# Set defaults for empty variables (cleanup already done above)
+success_count=${success_count:-0}
+error_count=${error_count:-0}
+no_text_count=${no_text_count:-0}
+payload_error_count=${payload_error_count:-0}
 
 processed_files=$new_files_count
 
@@ -2041,35 +2055,38 @@ echo "Full log saved to: $LOG_FILE"
 
 # Final collection stats
 echo ""
-echo "Final collection statistics:"
+echo "Checking final collection statistics..."
 python3 -c "
 import chromadb
+import time
 
 try:
+    print('Connecting to ChromaDB...', end='', flush=True)
+    start_time = time.time()
+
     if '$CLIENT_TYPE' == 'remote':
         client = chromadb.HttpClient(host='$CHROMA_HOST', port=$CHROMA_PORT)
     else:
         client = chromadb.PersistentClient(path='$CHROMA_DATA_DIR')
-    
+
+    print(f' ({time.time() - start_time:.1f}s)')
+
+    print('Getting collection info...', end='', flush=True)
+    start_time = time.time()
     collection = client.get_collection('$COLLECTION_NAME')
+    total_docs = collection.count()
+    print(f' ({time.time() - start_time:.1f}s)')
+
     print(f'Collection: {collection.name}')
-    print(f'Total documents: {collection.count()}')
-    
-    # Count documents from this upload session
-    try:
-        new_docs = collection.get(
-            where={'is_new_upload': True},
-            include=['metadatas']
-        )
-        new_count = len(new_docs['ids'])
-        if new_count > 0:
-            print(f'Documents added in this session: {new_count}')
-    except:
-        pass  # Ignore errors counting new docs
-    
+    print(f'Total documents: {total_docs}')
+
+    # Skip the slow new document count query for faster completion
+    print(f'Documents added in this session: $success_count files processed')
+    # Note: Could enable detailed counting with --verbose flag in future
+
     print('✅ ChromaDB is now up to date!')
-    print('📊 Next run will only process newly added PDFs.')
-    
+    print('📊 Next run will only process newly added files.')
+
 except Exception as e:
     print(f'Error getting collection stats: {e}')
 "

@@ -104,19 +104,19 @@ The upload script supports three optimized store types, each with tailored chunk
 | `source-code` | **Auto-optimized** | **10% overlap** | AST-aware chunking | Code analysis, API understanding |
 | `documentation` | **Auto-optimized** | **10% overlap** | Structure-aware chunking | README, wikis, tutorials |
 
-### 🧠 Model-Optimized Chunking (2024 Update)
+### 🧠 Model-Optimized Chunking
 
-The system now automatically optimizes chunk sizes based on each embedding model's token limits:
+The system automatically optimizes chunk sizes for each embedding model:
 
-- **Stella**: 460 tokens/chunk (90% of 512 limit + 10% safety margin)
-- **ModernBERT**: 920 tokens/chunk (conservative limit with safety margin)
-- **BGE-Large**: 460 tokens/chunk (90% of 512 limit + 10% safety margin)
-- **Default**: 460 tokens/chunk (optimized for all-MiniLM-L6-v2)
+- **Stella**: 400 tokens/chunk with 50% safety buffer (~640 chars)
+- **ModernBERT**: 920 tokens/chunk (large context window)
+- **BGE-Large**: 400 tokens/chunk with 50% safety buffer
+- **Default**: 400 tokens/chunk with 50% safety buffer
 
-**Store-specific adjustments:**
-- Source code: -60 tokens (better AST parsing)
-- Documentation: -30 tokens (better semantic coherence)
-- PDF: Uses full model defaults
+**AST-aware source code chunking:**
+- Automatically splits large functions at statement boundaries
+- Preserves code structure and semantic meaning
+- Uses conservative sizing to prevent token limit violations
 
 ### 🔍 PDF Store Type
 - **OCR Support**: Automatic image-only PDF processing with Tesseract/EasyOCR
