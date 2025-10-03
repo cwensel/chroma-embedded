@@ -1,6 +1,6 @@
 # ChromaDB Enhanced Multi-Format Processing
 
-High-performance ChromaDB server with built-in support for multiple state-of-the-art embedding models, enabling superior semantic search across PDFs, source code, and documentation with store-optimized chunking strategies.
+High-performance ChromaDB server with built-in support for multiple state-of-the-art embedding models, enabling superior semantic search across PDFs, source code, and markdown with store-optimized chunking strategies.
 
 ## 🚀 Quick Start
 
@@ -24,8 +24,8 @@ python3 check_deps.py
 # Source code with AST-aware chunking (uses 400 tokens for Stella)
 ./upload.sh -i /path/to/source --store source-code -e stella -c CodeLibrary
 
-# Documentation with optimized chunking (uses 430 tokens for Stella)
-./upload.sh -i /path/to/docs --store documentation -e stella -c DocsLibrary
+# Documentation with heading-aware markdown chunking (uses 430 tokens for Stella)
+./upload.sh -i /path/to/markdown --store markdown -e stella -c DocsLibrary
 ```
 
 ## 📁 Project Structure
@@ -35,7 +35,7 @@ python3 check_deps.py
 | `Dockerfile` | Multi-model ChromaDB Docker image |
 | `build.sh` | Build script for Docker image |
 | `server.sh` | Server management script |
-| `upload.sh` | Multi-format upload script (PDF, source code, docs) |
+| `upload.sh` | Multi-format upload script (PDF, source code, markdown) |
 | `embedding_functions.py` | Enhanced embedding model implementations |
 | `test.sh` | Complete setup testing |
 | `check_deps.py` | Dependency checker (OCR + ASTChunk) |
@@ -47,6 +47,7 @@ python3 check_deps.py
 ## 📋 Installation & Dependencies
 
 ### Python Dependencies
+
 ```bash
 # Install all dependencies (includes ASTChunk and Tesseract wrapper)
 pip install .
@@ -59,14 +60,17 @@ pip install -e .[dev]
 ```
 
 ### Key Dependencies Added
+
 - **ASTChunk** (`astchunk>=0.1.0`) - AST-aware source code chunking
 - **Tree-sitter** - Multi-language parsing support (Python, Java, TypeScript, C#, etc.)
 - **Enhanced metadata extraction** - Store-specific metadata for better retrieval
 
 ### OCR Engine Setup
+
 Choose your preferred OCR engine:
 
 **Option 1: Tesseract (Recommended - faster)**
+
 ```bash
 # Install system dependency
 # macOS: brew install tesseract
@@ -78,6 +82,7 @@ Choose your preferred OCR engine:
 ```
 
 **Option 2: EasyOCR (Pure Python - no system deps)**
+
 ```bash
 # Install EasyOCR package
 pip install .[easyocr]
@@ -101,8 +106,8 @@ The upload script supports three optimized store types, each with tailored chunk
 | Store Type | Chunk Size | Overlap | Processing | Best For |
 |------------|------------|---------|------------|----------|
 | `pdf` | **Auto-optimized** | **10% overlap** | OCR + Text extraction | Research papers, documents |
-| `source-code` | **Auto-optimized** | **10% overlap** | AST-aware chunking | Code analysis, API understanding |
-| `documentation` | **Auto-optimized** | **10% overlap** | Structure-aware chunking | README, wikis, tutorials |
+| `source-code` | **Auto-optimized** | **5% overlap** | AST-aware chunking | Code analysis, API understanding |
+| `markdown` | **Auto-optimized** | **Smart overlap** | Heading-aware for markdown | README, wikis, tutorials |
 
 ### 🧠 Model-Optimized Chunking
 
@@ -114,16 +119,26 @@ The system automatically optimizes chunk sizes for each embedding model:
 - **Default**: 400 tokens/chunk with 50% safety buffer
 
 **AST-aware source code chunking:**
+
 - Automatically splits large functions at statement boundaries
 - Preserves code structure and semantic meaning
 - Uses conservative sizing to prevent token limit violations
 
+**Heading-aware markdown chunking:**
+
+- Respects H1-H6 heading hierarchy
+- Keeps sections together when they fit in token limits
+- Splits at subsection boundaries when sections are too large
+- Preserves heading context in chunk metadata
+
 ### 🔍 PDF Store Type
+
 - **OCR Support**: Automatic image-only PDF processing with Tesseract/EasyOCR
 - **Language Support**: 100+ OCR languages supported
 - **Metadata**: File size, extraction method, OCR confidence, image detection
 
 ### 💻 Source Code Store Type
+
 - **Git Project-Aware**: Automatically detects `.git` directories and tracks project-level changes
 - **Smart Change Detection**: Compares git commit hashes to detect when projects need re-indexing
 - **Respects .gitignore**: Uses `git ls-files` to only index tracked files
@@ -133,17 +148,21 @@ The system automatically optimizes chunk sizes for each embedding model:
 - **Automatic Language Detection**: Based on file extensions
 - **Project Search Depth**: Control how deep to search for nested git projects
 
-### 📚 Documentation Store Type
-- **Optimized for Text**: Smaller chunks for better semantic granularity
-- **Markdown Support**: Preserves structure and formatting context
+### 📚 Markdown Store Type
+
+- **Heading-Aware Markdown Chunking**: Intelligently splits markdown at section boundaries
+- **Structure Preservation**: Respects H1-H6 heading hierarchy
+- **Smart Splitting**: Keeps sections together when possible, splits at subsections when needed
+- **Enhanced Metadata**: Heading hierarchy, section depth, primary heading per chunk
 - **Content Analysis**: Detects code blocks, links, and document structure
-- **Metadata**: Document type, structural elements, content analysis
+- **Supported Formats**: Markdown (`.md`), text (`.txt`), reStructuredText (`.rst`), AsciiDoc (`.adoc`), HTML, XML
 
 ## 🔄 Git Project-Aware Processing
 
 When using `--store source-code`, the system automatically detects and manages git projects with intelligent change detection:
 
 ### Key Features
+
 - **Automatic Discovery**: Finds `.git` directories to identify project boundaries
 - **Smart Change Detection**: Compares git commit hashes to detect when re-indexing is needed
 - **Clean Updates**: Deletes all existing chunks for a project when its commit hash changes
@@ -151,6 +170,7 @@ When using `--store source-code`, the system automatically detects and manages g
 - **Project Metadata**: Every chunk includes git project context (name, commit hash, remote URL, branch)
 
 ### Depth Control
+
 ```bash
 --depth 1        # Only direct subdirectories (fast, good for organized workspaces)
 --depth 2        # Two levels deep (includes some nested projects)
@@ -158,20 +178,92 @@ When using `--store source-code`, the system automatically detects and manages g
 ```
 
 ### Change Detection Workflow
+
 1. **First Run**: Indexes all git-tracked files, stores commit hash with each chunk
 2. **Subsequent Runs**: Compares stored vs current commit hash
 3. **If Changed**: Deletes all project chunks and re-indexes all files
 4. **If Unchanged**: Uses regular file-by-file processing for new files only
 
 ### Benefits
+
 - **Automatic Cleanup**: Moved/deleted files are automatically removed
 - **Project Context**: Search results include which project and commit the code came from
 - **Efficient Updates**: Only re-processes projects that have actually changed
 - **Workspace Friendly**: Handles directories with multiple git projects gracefully
 
+## 📝 Markdown Documentation Processing
+
+When using `--store markdown` with markdown files (`.md`), the system automatically uses heading-aware chunking:
+
+### Key Features
+
+- **Hierarchical Chunking**: Splits at H1-H6 heading boundaries
+- **Smart Section Grouping**: Keeps related content together when it fits within token limits
+- **Subsection Splitting**: Automatically splits large sections at subsection boundaries
+- **Heading Context**: Each chunk includes full heading hierarchy in metadata
+- **Token-Optimized**: Respects model-specific token limits (430 tokens for Stella, 880 for ModernBERT)
+
+### Chunking Strategy
+
+1. **Parse Structure**: Identifies all headings (H1-H6) and their content
+2. **Build Hierarchy**: Tracks parent-child relationships between sections
+3. **Smart Grouping**: Combines consecutive sections that fit within token limits
+4. **Intelligent Splitting**: When sections exceed limits, splits at subsection boundaries
+5. **Metadata Enrichment**: Adds heading hierarchy, section depth, and primary heading to each chunk
+
+### Metadata Fields
+
+Each markdown chunk includes:
+
+- `markdown_headings`: Full heading hierarchy (e.g., "Introduction > Getting Started > Installation")
+- `markdown_primary_heading`: The main heading for this chunk
+- `markdown_section_depth`: Nesting level of the section (0 = no headings, 1 = H1, 2 = H2, etc.)
+- `markdown_heading_aware`: Flag indicating heading-aware chunking was used
+
+### Usage Examples
+
+```bash
+# Process markdown documentation with heading-aware chunking
+./upload.sh -i /path/to/markdown/docs --store markdown -e stella -c MarkdownDocs
+
+# Query by section using metadata filters
+python3 -c "
+import chromadb
+client = chromadb.HttpClient(host='localhost', port=9000)
+collection = client.get_collection('MarkdownDocs')
+
+# Find all chunks from 'Installation' section
+results = collection.query(
+    query_texts=['How do I install?'],
+    where={'markdown_primary_heading': 'Installation'},
+    n_results=5
+)
+"
+
+# View heading structure of indexed documents
+python3 -c "
+import chromadb
+client = chromadb.HttpClient(host='localhost', port=9000)
+collection = client.get_collection('MarkdownDocs')
+docs = collection.get(include=['metadatas'], limit=20)
+
+for meta in docs['metadatas']:
+    if 'markdown_headings' in meta:
+        print(f'{meta[\"filename\"]}: {meta[\"markdown_headings\"]}')
+"
+```
+
+### Benefits
+
+- **Better Semantic Search**: Chunks aligned with document structure
+- **Section-Aware Queries**: Filter results by specific sections
+- **Context Preservation**: Full heading hierarchy provides better context
+- **Improved Retrieval**: More relevant results due to semantic boundaries
+
 ## 🔧 Server Management
 
 ### Start Server
+
 ```bash
 # Start with Stella embeddings (recommended)
 ./server.sh -m stella
@@ -184,6 +276,7 @@ When using `--store source-code`, the system automatically detects and manages g
 ```
 
 ### Server Operations
+
 ```bash
 # View logs
 ./server.sh --logs
@@ -198,6 +291,7 @@ When using `--store source-code`, the system automatically detects and manages g
 ## 🚧 Known Limitations
 
 ### ChromaDB Unique Metadata Values
+
 ChromaDB currently does not provide built-in aggregate functions or SQL-like `DISTINCT` operations for efficiently retrieving unique metadata values. This limitation affects scenarios where you need to:
 
 - Get a list of unique project names from a large collection
@@ -218,6 +312,7 @@ unique_projects = list(unique_projects)
 
 **Community Request:**
 This feature has been actively requested by the ChromaDB community. You can track progress and add your support at:
+
 - **GitHub Issue:** [Query with unique metadata filter #2873](https://github.com/chroma-core/chroma/issues/2873)
 
 **Impact:**
@@ -228,6 +323,7 @@ For large collections (thousands of documents), retrieving unique metadata value
 When uploading large files (especially minified JavaScript or large source files), you may encounter "413 Payload Too Large" errors. The system now provides fail-fast error handling with clear recovery options:
 
 ### Error Detection & Recovery
+
 ```bash
 # If you get a payload error, the system will show:
 ❌ PAYLOAD TOO LARGE ERROR
@@ -246,6 +342,7 @@ When uploading large files (especially minified JavaScript or large source files
 ```
 
 ### Prevention & Optimization
+
 ```bash
 # Preview chunk sizes before uploading (dry-run)
 ./upload.sh --dry-run -i /path/to/source --store source-code
@@ -258,6 +355,7 @@ When uploading large files (especially minified JavaScript or large source files
 ```
 
 ### Project Cleanup Commands
+
 ```bash
 # Delete specific project from collection
 ./upload.sh --delete-project my-project-name -c MyCollection
@@ -269,6 +367,7 @@ When uploading large files (especially minified JavaScript or large source files
 ## 📤 Multi-Format Upload Examples
 
 ### PDF Processing (Research Papers & Documents)
+
 ```bash
 # Basic PDF upload with OCR (auto-optimized: 460 tokens for Stella)
 ./upload.sh -i /path/to/pdfs --store pdf -e stella -c ResearchLibrary
@@ -282,6 +381,7 @@ When uploading large files (especially minified JavaScript or large source files
 ```
 
 ### Source Code Processing (API Understanding & Analysis)
+
 ```bash
 # Git project-aware source code chunking (auto-optimized: 400 tokens for Stella)
 ./upload.sh -i /path/to/source --store source-code -e stella -c CodeLibrary
@@ -305,30 +405,32 @@ When uploading large files (especially minified JavaScript or large source files
 ./upload.sh -i /path/to/source --store source-code -e stella --chunk-size 300 -c SmallChunks
 ```
 
-### Documentation Processing (README, Wikis, Tutorials)
-```bash
-# Optimized documentation processing (auto-optimized: 430 tokens for Stella)
-./upload.sh -i /path/to/docs --store documentation -e stella -c DocsLibrary
+### Markdown Processing (README, Wikis, Tutorials)
 
-# Process specific documentation types
-./upload.sh -i ./wiki --store documentation -e stella -c ProjectWiki
-./upload.sh -i ./tutorials --store documentation -e stella -c Tutorials
+```bash
+# Optimized markdown processing (auto-optimized: 430 tokens for Stella)
+./upload.sh -i /path/to/docs --store markdown -e stella -c DocsLibrary
+
+# Process specific markdown types
+./upload.sh -i ./wiki --store markdown -e stella -c ProjectWiki
+./upload.sh -i ./tutorials --store markdown -e stella -c Tutorials
 ```
 
 ### Advanced Multi-Format Workflows
+
 ```bash
 # Create specialized collections per content type
 ./upload.sh -i ./papers --store pdf -e stella -c Research --delete-collection
 ./upload.sh -i ./codebase --store source-code -e stella -c CodeAnalysis --delete-collection
-./upload.sh -i ./documentation --store documentation -e stella -c ProjectDocs --delete-collection
+./upload.sh -i ./documentation --store markdown -e stella -c ProjectDocs --delete-collection
 
 # Git project-aware workflows
 ./upload.sh -i /workspace --store source-code -e stella -c WorkspaceCode --depth 1  # Top-level projects only
 ./upload.sh -i /workspace/thirdparty --store source-code -e stella -c ThirdPartyCode --depth 2  # Include nested libs
 
-# Mixed source code and documentation
+# Mixed source code and markdown
 ./upload.sh -i ./my-project --store source-code -e stella -c MyProject --delete-collection
-./upload.sh -i ./my-project/docs --store documentation -e stella -c MyProjectDocs --delete-collection
+./upload.sh -i ./my-project/docs --store markdown -e stella -c MyProjectDocs --delete-collection
 
 # Custom chunking only when needed (overrides auto-optimization)
 ./upload.sh -i /path/to/files --store pdf --chunk-size 300 --chunk-overlap 30 -c SmallChunks
@@ -365,6 +467,7 @@ When uploading large files (especially minified JavaScript or large source files
 ## 💻 Source Code Support
 
 ### Supported Programming Languages
+
 The source code store type supports **15+ programming languages** with automatic detection:
 
 | Language | Extensions | AST Parser | Enhanced Metadata |
@@ -386,6 +489,7 @@ The source code store type supports **15+ programming languages** with automatic
 ### AST-Aware Chunking Benefits
 
 **Traditional Text Chunking Problems:**
+
 ```python
 # ❌ Basic chunking might split mid-function
 def calculate_api_response(data):
@@ -398,6 +502,7 @@ class DatabaseManager:
 ```
 
 **AST-Aware Chunking Solution:**
+
 ```python
 # ✅ ASTChunk preserves semantic boundaries
 def calculate_api_response(data):
@@ -433,6 +538,7 @@ Each source code chunk includes rich metadata for precise retrieval:
 ### API Understanding Use Cases
 
 **Perfect for:**
+
 - 🔍 **API Discovery**: Find similar function signatures across projects
 - 📚 **Usage Examples**: Locate how specific APIs are used in practice
 - 🔧 **Implementation Patterns**: Discover common coding patterns and practices
@@ -440,18 +546,20 @@ Each source code chunk includes rich metadata for precise retrieval:
 - 📖 **Documentation Gap Filling**: When official docs are lacking or incomplete
 
 **Query Examples:**
+
 - "How to authenticate with REST APIs in Python?"
 - "Show me error handling patterns for database connections"
 - "Find examples of async/await usage in JavaScript"
 - "What are common patterns for dependency injection in Java?"
 
-## 📚 Documentation Processing
+## 📚 Markdown Processing
 
 ### Optimized for Technical Documentation
 
-The documentation store type is specifically tuned for technical content:
+The markdown store type is specifically tuned for technical content:
 
 **Supported Formats:**
+
 - **Markdown** (`.md`) - README files, wikis, technical guides
 - **Text** (`.txt`) - Plain text documentation
 - **reStructuredText** (`.rst`) - Python documentation standard
@@ -465,7 +573,7 @@ Documentation chunks include intelligent content detection:
 
 ```json
 {
-  "store_type": "documentation",
+  "store_type": "markdown",
   "doc_type": "markdown",
   "has_code_blocks": true,
   "has_links": true,
@@ -477,6 +585,7 @@ Documentation chunks include intelligent content detection:
 ### Documentation Use Cases
 
 **Perfect for:**
+
 - 📖 **Project Onboarding**: Quickly understand new codebases and their documentation
 - 🔗 **Cross-Reference Discovery**: Find related documentation across different projects
 - 💡 **Best Practice Learning**: Extract patterns and recommendations from documentation
@@ -484,6 +593,7 @@ Documentation chunks include intelligent content detection:
 - 🚀 **Setup Instructions**: Locate installation and configuration guides
 
 **Query Examples:**
+
 - "How to set up development environment for this project?"
 - "What are the deployment procedures and requirements?"
 - "Find architectural decisions and design patterns used"
@@ -492,6 +602,7 @@ Documentation chunks include intelligent content detection:
 ## 🔄 Migration from Old Setup
 
 If currently using PersistentClient or basic PDF-only setup:
+
 ```bash
 # 1. Rebuild with enhanced capabilities
 ./build.sh
@@ -504,7 +615,7 @@ If currently using PersistentClient or basic PDF-only setup:
 
 # 4. Add new content types
 ./upload.sh -i /path/to/source --store source-code -e stella -c CodeLibrary
-./upload.sh -i /path/to/docs --store documentation -e stella -c DocsLibrary
+./upload.sh -i /path/to/docs --store markdown -e stella -c DocsLibrary
 ```
 
 Then update your `claude.json` MCP configuration to use `localhost:9000`.
@@ -512,17 +623,19 @@ Then update your `claude.json` MCP configuration to use `localhost:9000`.
 ## 🧪 Testing & Validation
 
 ### Comprehensive Testing
+
 ```bash
 # Run all tests (includes new store types)
 ./test.sh
 
 # Test each store type individually
 ./upload.sh -i ./embedding_functions.py --store source-code -e stella -l 1 -c TestSource --delete-collection
-./upload.sh -i ./README.md --store documentation -e stella -l 1 -c TestDocs --delete-collection
+./upload.sh -i ./README.md --store markdown -e stella -l 1 -c TestDocs --delete-collection
 ./upload.sh -i /path/to/test.pdf --store pdf -e stella -l 1 -c TestPDF --delete-collection
 ```
 
 ### Verify AST Chunking
+
 ```bash
 # Check if ASTChunk is working properly
 python3 -c "
@@ -536,6 +649,7 @@ print('✅ ASTChunk chunker initialized successfully')
 ```
 
 ### Validate Store-Specific Metadata
+
 ```bash
 # Query and inspect metadata for different store types
 python3 -c "
@@ -555,18 +669,18 @@ try:
 except:
     print('⚠️  No source code collection found')
 
-# Check documentation metadata
+# Check markdown metadata
 try:
     collection = client.get_collection('TestDocs')
     docs = collection.get(limit=1, include=['metadatas'])
     metadata = docs['metadatas'][0]
-    print('Documentation Metadata:')
+    print('Markdown Metadata:')
     print(f'  Doc Type: {metadata.get(\"doc_type\", \"N/A\")}')
     print(f'  Has Code Blocks: {metadata.get(\"has_code_blocks\", \"N/A\")}')
     print(f'  Has Links: {metadata.get(\"has_links\", \"N/A\")}')
-    print('✅ Documentation metadata validated')
+    print('✅ Markdown metadata validated')
 except:
-    print('⚠️  No documentation collection found')
+    print('⚠️  No markdown collection found')
 "
 ```
 
@@ -589,6 +703,7 @@ export DEFAULT_STORE_TYPE=pdf            # Default store type
 ## 🔍 Troubleshooting
 
 ### Server Won't Start
+
 ```bash
 # Check Docker
 docker ps
@@ -601,6 +716,7 @@ docker ps
 ```
 
 ### Upload Failures
+
 ```bash
 # Test server connection
 curl http://localhost:9000/api/v2/heartbeat
@@ -623,6 +739,7 @@ python3 -c "from astchunk import ASTChunkBuilder; print('✅ ASTChunk available'
 ```
 
 ### OCR Issues (PDF Store Type)
+
 ```bash
 # EasyOCR issues (should work out of the box)
 python3 -c "import easyocr; print('EasyOCR OK')"
@@ -636,6 +753,7 @@ pip install .[tesseract]
 ```
 
 ### ASTChunk Issues (Source Code Store Type)
+
 ```bash
 # Verify ASTChunk installation
 python3 -c "import astchunk; from astchunk import ASTChunkBuilder; print('ASTChunk working')"
@@ -662,6 +780,7 @@ print(f'✅ ASTChunk test successful: {len(result)} chunks')
 ```
 
 ### Model Loading Issues
+
 - Ensure Docker has sufficient memory (8GB+ recommended)
 - Check network connectivity for model downloads
 - Verify disk space (~10GB for all models)
@@ -669,10 +788,11 @@ print(f'✅ ASTChunk test successful: {len(result)} chunks')
 ## 🎓 Best Practices
 
 ### Store Type Selection
+
 1. **Choose the Right Store Type**:
    - `--store pdf` for research papers and documents
    - `--store source-code` for API understanding and code analysis
-   - `--store documentation` for README files and technical guides
+   - `--store markdown` for README files and technical guides
 
 2. **Collection Organization**:
    - Use descriptive collection names: `ResearchLibrary`, `CodeLibrary`, `DocsLibrary`
@@ -680,12 +800,14 @@ print(f'✅ ASTChunk test successful: {len(result)} chunks')
    - Consider language-specific collections for source code: `PythonCode`, `JavaCode`
 
 ### Embedding Model Strategy
+
 3. **Model Selection by Use Case**:
    - **Stella** (recommended): Best for research papers and technical content
    - **ModernBERT**: Latest technology, good for mixed content
    - **BGE-Large**: Production-ready, reliable for all content types
 
 ### Processing Optimization
+
 4. **Model-Optimized Chunking** (2024 Update):
    - Use default auto-optimization for best results (no --chunk-size needed)
    - System automatically respects each model's token limits with safety margins
@@ -698,6 +820,7 @@ print(f'✅ ASTChunk test successful: {len(result)} chunks')
    - Monitor disk space for model downloads (~10GB total)
 
 ### Content-Specific Tips
+
 6. **PDF Processing**:
    - Enable OCR by default (handles image-only PDFs)
    - Test with different OCR engines if accuracy issues occur
@@ -714,6 +837,7 @@ print(f'✅ ASTChunk test successful: {len(result)} chunks')
    - Smaller chunk sizes work better for precise documentation retrieval
 
 ### Quality Assurance
+
 9. **Testing & Validation**:
    - Always test with small uploads first (`-l 5`)
    - Verify metadata is populated correctly for each store type
@@ -729,11 +853,13 @@ print(f'✅ ASTChunk test successful: {len(result)} chunks')
 ### Setup Steps
 
 1. **Start ChromaDB Server**:
+
    ```bash
    ./server.sh -m stella
    ```
 
 2. **Configure MCP in claude.json**:
+
    ```json
    {
      "mcpServers": {
@@ -753,6 +879,7 @@ print(f'✅ ASTChunk test successful: {len(result)} chunks')
    ```
 
 3. **Test Connection**:
+
    ```bash
    curl http://localhost:9000/api/v2/heartbeat
    ```
@@ -760,8 +887,9 @@ print(f'✅ ASTChunk test successful: {len(result)} chunks')
 4. **Restart Claude Code** to load the configuration
 
 ### Benefits
+
 - ✅ **Superior Embeddings**: Stella-400m, ModernBERT, BGE-Large vs default models
-- ✅ **Multi-Format Support**: PDFs, source code, and documentation in one system
+- ✅ **Multi-Format Support**: PDFs, source code, and markdown in one system
 - ✅ **AST-Aware Code Analysis**: Semantic chunking preserves function boundaries
 - ✅ **Enhanced Metadata**: Store-specific metadata for precise retrieval
 - ✅ **OCR Support**: Automatically processes image-only PDFs

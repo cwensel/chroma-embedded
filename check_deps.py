@@ -88,6 +88,14 @@ def main():
     else:
         print("  → Install with: pip install .")
 
+    # Markdown parsing for documentation
+    print("\nMarkdown Processing:")
+    mistune_ok = check_package("mistune", "Markdown parsing for heading-aware chunking")
+    if mistune_ok:
+        print("  → Heading-aware chunking ready for markdown!")
+    else:
+        print("  → Install with: pip install .")
+
     # Core dependencies
     print("\nCore Dependencies:")
     core_deps = [
@@ -149,6 +157,13 @@ def main():
         print("✅ ASTChunk ready - Source code processing available")
     else:
         print("⚠️  ASTChunk missing - Source code will use basic chunking")
+        print("   Install with: pip install .")
+
+    # Markdown parsing check
+    if mistune_ok:
+        print("✅ Mistune ready - Markdown heading-aware chunking available")
+    else:
+        print("⚠️  Mistune missing - Markdown will use basic chunking")
         print("   Install with: pip install .")
 
     # OCR check

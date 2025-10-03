@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Script to upload files to ChromaDB with store-specific optimizations
-# Supports PDFs (with OCR), source code (with AST chunking), and documentation
+# Supports PDFs (with OCR), source code (with AST chunking), and markdown
 # Works with both persistence (local) and remote ChromaDB clients
 # 
 # Usage: ./upload_new_pdfs.sh [OPTIONS]
@@ -14,7 +14,7 @@
 #   -i, --input-path PATH      Path to recursively search for files (required)"
 #   -d, --data-path PATH       Path for ChromaDB persistence data storage (forces persistence mode)
 #   -e, --embedding-model MODEL Embedding model (stella|modernbert|bge-large|default) [default: stella]
-#   --store TYPE               Store type: pdf, source-code, documentation [default: pdf]
+#   --store TYPE               Store type: pdf, source-code, markdown [default: pdf]
 #   --chunk-size TOKENS        Chunk size in tokens (auto=model-specific, or custom number)
 #   --chunk-overlap TOKENS     Chunk overlap in tokens (auto=model-specific, or custom number)
 #   --batch-size NUMBER        Upload batch size to avoid payload limits (default: 50)
@@ -75,7 +75,7 @@ show_help() {
     echo "  -i, --input-path PATH      Path to recursively search for PDF files (required)"
     echo "  -d, --data-path PATH       Path for ChromaDB persistence data storage (forces persistence mode)"
     echo "  -e, --embedding-model MODEL Embedding model: stella, modernbert, bge-large, default [default: stella]"
-    echo "  --store TYPE               Store type: pdf, source-code, documentation [default: pdf]"
+    echo "  --store TYPE               Store type: pdf, source-code, markdown [default: pdf]"
     echo "  --chunk-size TOKENS        Chunk size in tokens (auto=model-optimized, or specify number)"
     echo "  --chunk-overlap TOKENS     Chunk overlap in tokens (auto=model-optimized, or specify number)"
     echo "  --batch-size NUMBER        Upload batch size to avoid payload limits (default: 50)"
@@ -114,8 +114,8 @@ show_help() {
     echo "  # Upload source code with AST-aware chunking"
     echo "  $0 -i /path/to/source --store source-code -c CodeLibrary -e stella"
     echo ""
-    echo "  # Upload documentation files"
-    echo "  $0 -i /path/to/docs --store documentation -c DocsLibrary -e stella"
+    echo "  # Upload markdown documentation files"
+    echo "  $0 -i /path/to/docs --store markdown -c DocsLibrary -e stella"
     echo ""
     echo "  # Advanced options - custom chunk size"
     echo "  $0 -i /path/to/files --store pdf --delete-collection -c MyCollection -e stella --chunk-size 400"
@@ -305,8 +305,9 @@ set_model_defaults() {
             MODEL_CHUNK_SIZE="$((MODEL_CHUNK_SIZE - 60))"
             MODEL_CHUNK_OVERLAP="$((MODEL_CHUNK_OVERLAP / 2))"
             ;;
-        documentation)
-            # Documentation can use slightly smaller chunks for better semantic coherence
+        markdown)
+            # Markdown can use slightly smaller chunks for better semantic coherence
+            # Extra reduction for heading context preservation
             MODEL_CHUNK_SIZE="$((MODEL_CHUNK_SIZE - 30))"
             ;;
         pdf)
@@ -333,15 +334,15 @@ case "$STORE_TYPE" in
             OCR_ENABLED="false"
         fi
         ;;
-    documentation)
-        # Disable OCR for documentation by default
+    markdown)
+        # Disable OCR for markdown by default
         if [ "$OCR_ENABLED" = "true" ]; then
             OCR_ENABLED="false"
         fi
         ;;
     *)
         echo "❌ Invalid store type: $STORE_TYPE"
-        echo "Valid options: pdf, source-code, documentation"
+        echo "Valid options: pdf, source-code, markdown"
         echo "Use --help for more information"
         exit 1
         ;;
@@ -363,7 +364,7 @@ get_file_extensions() {
         source-code)
             echo "*.py *.java *.js *.ts *.tsx *.jsx *.go *.rs *.cpp *.c *.cs *.php *.rb *.kt *.scala *.swift"
             ;;
-        documentation)
+        markdown)
             echo "*.md *.txt *.rst *.adoc *.html *.xml"
             ;;
     esac
@@ -489,10 +490,11 @@ find_files() {
 
         rm -f "$git_projects_file"
     else
-        # For PDF and documentation, use regular find
-        for ext in $extensions; do
+        # For PDF and markdown, use regular find
+        # Use proper quoting to prevent glob expansion
+        while IFS= read -r ext; do
             find "$input_path" -name "$ext" -type f >> "$output_file" 2>/dev/null || true
-        done
+        done < <(echo "$extensions" | tr ' ' '\n')
     fi
 }
 
@@ -1381,7 +1383,7 @@ try:
         doc.close()
         extraction_method = 'pymupdf'
 
-    elif store_type in ['source-code', 'documentation']:
+    elif store_type in ['source-code', 'markdown']:
         # Read text files directly
         try:
             with open(pdf_path, 'r', encoding='utf-8') as f:
@@ -1555,6 +1557,187 @@ try:
         print(f'Model-optimized chunking ({model_name}): {len(chunks)} chunks, ~{chunk_size_tokens} tokens each ({chars_per_token} chars/token)')
         return chunks
 
+    # Markdown heading-aware chunking
+    def chunk_markdown_heading_aware(text, chunk_size_tokens=430, model_name=None):
+        '''
+        Chunk markdown text based on heading structure while respecting token limits.
+        Tries to keep sections together, splits at subsection boundaries when needed.
+        '''
+        try:
+            import mistune
+            import re
+        except ImportError:
+            print('Mistune not available, falling back to token-aware chunking')
+            # Use smaller overlap for markdown
+            overlap_tokens = max(20, chunk_size_tokens // 20)
+            return chunk_text_token_aware(text, chunk_size_tokens, overlap_tokens, model_name)
+
+        # Model-specific character-to-token ratios
+        model_char_ratios = {
+            'stella': 3.2,
+            'modernbert': 3.4,
+            'bge-large': 3.3,
+            'default': 3.5
+        }
+        chars_per_token = model_char_ratios.get(model_name, 3.5)
+        max_chunk_chars = int(chunk_size_tokens * chars_per_token)
+
+        # Parse markdown using mistune's proper GFM-compliant parser
+        md_parser = mistune.create_markdown(renderer='ast')
+        ast = md_parser(text)
+
+        def extract_text(node):
+            '''Recursively extract text from AST node'''
+            if isinstance(node, dict):
+                if node.get('type') == 'text':
+                    return node.get('raw', '')
+                elif 'children' in node:
+                    return ''.join(extract_text(child) for child in node['children'])
+            return ''
+
+        # Extract ALL headings from AST
+        expected_headings = []
+        for node in ast:
+            if node.get('type') == 'heading':
+                expected_headings.append({
+                    'level': node['attrs']['level'],
+                    'title': extract_text(node).strip()
+                })
+
+        # Find heading positions by testing each line with mistune
+        lines = text.split('\n')
+        heading_positions = []
+        heading_idx = 0  # Track which heading we're looking for
+
+        i = 0
+        while i < len(lines) and heading_idx < len(expected_headings):
+            # Test if current line (plus next for setext) forms a heading
+            test_lines = [lines[i]]
+            if i + 1 < len(lines):
+                test_lines.append(lines[i + 1])
+
+            test_text = '\n'.join(test_lines)
+            test_ast = md_parser(test_text)
+
+            # Check if mistune found a heading
+            for node in test_ast:
+                if node.get('type') == 'heading':
+                    found_title = extract_text(node).strip()
+                    found_level = node['attrs']['level']
+
+                    # Match against next expected heading
+                    if (heading_idx < len(expected_headings) and
+                        expected_headings[heading_idx]['title'] == found_title and
+                        expected_headings[heading_idx]['level'] == found_level):
+                        heading_positions.append({
+                            'line': i,
+                            'level': found_level,
+                            'title': found_title
+                        })
+                        heading_idx += 1
+                        break
+
+            i += 1
+
+        # Build sections from heading positions
+        sections = []
+        if not heading_positions:
+            sections.append({
+                'level': 0,
+                'title': 'Document Start',
+                'content': text
+            })
+        else:
+            # Add content before first heading
+            if heading_positions[0]['line'] > 0:
+                pre_lines = lines[:heading_positions[0]['line']]
+                if any(line.strip() for line in pre_lines):
+                    sections.append({
+                        'level': 0,
+                        'title': 'Document Start',
+                        'content': '\n'.join(pre_lines) + '\n'
+                    })
+
+            # Add each heading section
+            for idx, heading in enumerate(heading_positions):
+                start_line = heading['line']
+                if idx + 1 < len(heading_positions):
+                    end_line = heading_positions[idx + 1]['line']
+                else:
+                    end_line = len(lines)
+
+                section_lines = lines[start_line:end_line]
+                sections.append({
+                    'level': heading['level'],
+                    'title': heading['title'],
+                    'content': '\n'.join(section_lines) + '\n'
+                })
+
+        # Build chunks respecting section boundaries
+        chunks = []
+        chunk_metadata = []  # Store metadata for each chunk
+        current_chunk = ''
+        current_headings = []
+
+        def add_chunk(content, headings):
+            if content.strip():
+                chunks.append(content)
+                chunk_metadata.append({
+                    'headings': headings.copy(),
+                    'primary_heading': headings[-1] if headings else 'Document',
+                    'section_depth': len(headings)
+                })
+
+        for section in sections:
+            section_content = section['content']
+            section_heading = section['title']
+            section_level = section['level']
+
+            # Update heading hierarchy
+            if section_level > 0:
+                # Trim hierarchy to current level
+                current_headings = [h for h in current_headings if h['level'] < section_level]
+                current_headings.append({'level': section_level, 'title': section_heading})
+
+            # Check if adding this section would exceed chunk size
+            potential_chunk = current_chunk + section_content
+
+            if len(potential_chunk) <= max_chunk_chars:
+                # Section fits in current chunk
+                current_chunk = potential_chunk
+            else:
+                # Section doesn't fit
+                if current_chunk:
+                    # Save current chunk
+                    add_chunk(current_chunk, current_headings)
+
+                # Check if section itself is too large
+                if len(section_content) > max_chunk_chars:
+                    # Split large section into smaller chunks with overlap
+                    overlap_chars = int(chars_per_token * 20)  # 20 token overlap
+                    start = 0
+                    while start < len(section_content):
+                        end = start + max_chunk_chars
+                        chunk_content = section_content[start:end]
+                        add_chunk(chunk_content, current_headings)
+                        start = end - overlap_chars
+                        if start >= len(section_content):
+                            break
+                    current_chunk = ''
+                else:
+                    # Start new chunk with this section
+                    current_chunk = section_content
+
+        # Add remaining chunk
+        if current_chunk:
+            add_chunk(current_chunk, current_headings)
+
+        # Return chunks with metadata
+        print(f'Markdown heading-aware chunking ({model_name}): {len(chunks)} chunks, ~{chunk_size_tokens} tokens each')
+        print(f'  Preserved {sum(1 for m in chunk_metadata if m["section_depth"] > 0)} section boundaries')
+
+        return chunks, chunk_metadata
+
     # Chunk the text based on store type
     if store_type == 'source-code':
         # Use ASTChunk for source code
@@ -1604,9 +1787,20 @@ try:
             print(f'ASTChunk failed ({e}), falling back to token-aware chunking')
             chunks = chunk_text_token_aware(text, chunk_size, chunk_overlap, embedding_model)
 
+    elif store_type == 'markdown' and pdf_path.endswith('.md'):
+        # Use heading-aware chunking for markdown files
+        try:
+            chunks, md_chunk_metadata = chunk_markdown_heading_aware(text, chunk_size, embedding_model)
+            extraction_method = 'markdown_heading_aware'
+            print(f'Split into {len(chunks)} heading-aware chunks for markdown')
+        except Exception as e:
+            print(f'Markdown heading-aware chunking failed ({e}), falling back to token-aware chunking')
+            chunks = chunk_text_token_aware(text, chunk_size, chunk_overlap, embedding_model)
+            md_chunk_metadata = None
     else:
-        # Use token-aware chunking for PDF and documentation
+        # Use token-aware chunking for PDF and other markdown files
         chunks = chunk_text_token_aware(text, chunk_size, chunk_overlap, embedding_model)
+        md_chunk_metadata = None
     print(f'Using server-side embedding model: {embedding_model}')
 
     # Validate chunk sizes against model limits
@@ -1749,13 +1943,30 @@ try:
                     'git_project_name': git_metadata['git_project_name']
                 })
 
-        elif store_type == 'documentation':
-            chunk_metadata.update({
+        elif store_type == 'markdown':
+            doc_metadata = {
                 'doc_type': 'markdown' if pdf_path.endswith('.md') else 'text',
                 'has_code_blocks': '```' in chunk or '    ' in chunk,  # Simple heuristic
                 'has_links': '[' in chunk and '](' in chunk,
                 'line_count': len(chunk.split('\n')),
-            })
+            }
+
+            # Add markdown-specific metadata if available
+            if md_chunk_metadata and i < len(md_chunk_metadata):
+                md_meta = md_chunk_metadata[i]
+                # Extract heading titles from the list of heading dicts
+                heading_titles = [h['title'] if isinstance(h, dict) else str(h) for h in md_meta.get('headings', [])]
+                primary = md_meta.get('primary_heading', 'Document')
+                primary_title = primary['title'] if isinstance(primary, dict) else str(primary)
+
+                doc_metadata.update({
+                    'markdown_headings': ' > '.join(heading_titles) if heading_titles else '',
+                    'markdown_primary_heading': primary_title,
+                    'markdown_section_depth': md_meta.get('section_depth', 0),
+                    'markdown_heading_aware': True,
+                })
+
+            chunk_metadata.update(doc_metadata)
         chunk_metadatas.append(chunk_metadata)
 
     # Add chunks to collection in batches to avoid payload size limits
